@@ -1,0 +1,140 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "A user in the system.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "photoURL": { "type": ["string", "null"] },
+        "role": { "type": "string", "enum": ["admin", "user"] },
+        "createdAt": { "type": "timestamp" }
+      },
+      "required": ["uid", "name", "email", "role", "createdAt"]
+    },
+    "Produto": {
+      "title": "Produto",
+      "description": "Product catalog.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "nome": { "type": "string" },
+        "fotoUrl": { "type": ["string", "null"] },
+        "precoVendaMedio": { "type": "number" },
+        "lucroMedioReais": { "type": "number" },
+        "lucroMedioPercentual": { "type": "number" },
+        "gradeTamanho": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "categoria": { "type": "string" },
+        "descricao": { "type": "string" },
+        "status": { "type": "string", "enum": ["ativo", "inativo"] },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" },
+        "userId": { "type": "string" }
+      },
+      "required": ["id", "nome", "precoVendaMedio", "categoria", "status", "createdAt", "updatedAt", "userId"]
+    },
+    "Costureira": {
+      "title": "Costureira",
+      "description": "Seamstresses registry.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "nome": { "type": "string" },
+        "telefone": { "type": "string" },
+        "especialidade": { "type": "string" },
+        "endereco": { "type": "string" },
+        "observacoes": { "type": "string" },
+        "status": { "type": "string", "enum": ["ativo", "inativo"] },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" },
+        "userId": { "type": "string" }
+      },
+      "required": ["id", "nome", "telefone", "especialidade", "status", "createdAt", "updatedAt", "userId"]
+    },
+    "Producao": {
+      "title": "Producao",
+      "description": "Production orders.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "produtoId": { "type": "string" },
+        "produtoNome": { "type": "string" },
+        "produtoFoto": { "type": ["string", "null"] },
+        "costureiraId": { "type": "string" },
+        "costureiraNome": { "type": "string" },
+        "quantidadeTotal": { "type": "number" },
+        "gradeQuantidade": { "type": "object" },
+        "statusProducao": { "type": "string", "enum": ["Pré-produção", "Modelagem", "Risco", "Corte", "Costura", "Finalizado"] },
+        "statusEntrega": { "type": "string", "enum": ["Pendente", "Parcial", "Completo"] },
+        "etiquetas": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "dataInicio": { "type": "string" },
+        "dataPrevistaEntrega": { "type": "string" },
+        "dataRealEntrega": { "type": ["string", "null"] },
+        "valorTecido": { "type": "number" },
+        "valorCorte": { "type": "number" },
+        "valorCostura": { "type": "number" },
+        "valorRisco": { "type": "number" },
+        "valorInsumos": { "type": "number" },
+        "outrosGastos": { "type": "number" },
+        "custoTotal": { "type": "number" },
+        "custoPorPeca": { "type": "number" },
+        "imagens": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "totalEntregue": { "type": "number" },
+        "totalPendente": { "type": "number" },
+        "percentualConcluido": { "type": "number" },
+        "observacoes": { "type": "string" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" },
+        "userId": { "type": "string" }
+      },
+      "required": ["id", "produtoId", "costureiraId", "quantidadeTotal", "statusProducao", "statusEntrega", "dataInicio", "custoTotal", "custoPorPeca", "totalEntregue", "totalPendente", "userId", "createdAt", "updatedAt"]
+    },
+    "Entrega": {
+      "title": "Entrega",
+      "description": "Partial or complete delivery inside a production.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "dataEntrega": { "type": "string" },
+        "quantidadeEntregue": { "type": "number" },
+        "observacao": { "type": "string" },
+        "createdAt": { "type": "timestamp" },
+        "userId": { "type": "string" }
+      },
+      "required": ["id", "dataEntrega", "quantidadeEntregue", "createdAt", "userId"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "User" },
+      "description": "User profiles. Restricted by user ownership."
+    },
+    "/produtos/{produtoId}": {
+      "schema": { "$ref": "Produto" },
+      "description": "Product catalog. Ownership enforced."
+    },
+    "/costureiras/{costureiraId}": {
+      "schema": { "$ref": "Costureira" },
+      "description": "Seamstresses catalog. Ownership enforced."
+    },
+    "/producoes/{producaoId}": {
+      "schema": { "$ref": "Producao" },
+      "description": "Production orders. Ownership enforced."
+    },
+    "/producoes/{producaoId}/entregas/{entregaId}": {
+      "schema": { "$ref": "Entrega" },
+      "description": "Deliveries for a specific production. Ownership via userId."
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "Group NMZ",
+  "description": "Sistema de gestão de confecção e vendas.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

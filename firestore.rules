@@ -1,0 +1,320 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // GLOBALS / PRIMITIVES
+    // -------------------------------------------------------------------------
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // -------------------------------------------------------------------------
+    // USERS
+    // -------------------------------------------------------------------------
+
+    function isValidUser(data) {
+      return data.size() >= 5
+        && data.keys().hasAll(['uid', 'name', 'email', 'role', 'createdAt'])
+        && data.uid is string && data.uid.size() <= 128 && data.uid == request.auth.uid
+        && data.name is string && data.name.size() <= 200
+        && data.email is string && data.email.size() <= 200
+        && data.role in ['admin', 'user']
+        && (data.get('photoURL', null) == null || (data.photoURL is string && data.photoURL.size() <= 1024));
+    }
+
+    match /users/{userId} {
+      allow read: if isSignedIn() && request.auth.uid == userId;
+      allow create: if isSignedIn() && isValidId(userId) && request.auth.uid == userId && isValidUser(request.resource.data) && request.resource.data.createdAt == request.time;
+      allow update: if isSignedIn() && request.auth.uid == userId && isValidUser(request.resource.data)
+                    && request.resource.data.uid == resource.data.uid
+                    && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if false; // Users shouldn't be deleted actively
+    }
+
+    // -------------------------------------------------------------------------
+    // PRODUTOS
+    // -------------------------------------------------------------------------
+
+    function isValidProduto(data) {
+      return data.size() >= 8
+        && data.keys().hasAll(['id', 'nome', 'precoVendaMedio', 'categoria', 'status', 'createdAt', 'updatedAt', 'userId'])
+        && data.id is string && data.id.size() <= 128
+        && data.nome is string && data.nome.size() <= 200 && data.nome.size() > 0
+        && data.precoVendaMedio is number && data.precoVendaMedio >= 0
+        && data.categoria is string && data.categoria.size() <= 100
+        && data.status in ['ativo', 'inativo']
+        && data.userId is string && data.userId == request.auth.uid;
+    }
+
+    match /prod_produtos/{produtoId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(produtoId) && isValidProduto(request.resource.data) 
+                    && request.resource.data.id == produtoId 
+                    && request.resource.data.createdAt == request.time
+                    && request.resource.data.updatedAt == request.time;
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && isValidProduto(request.resource.data)
+                    && request.resource.data.id == resource.data.id
+                    && request.resource.data.userId == resource.data.userId
+                    && request.resource.data.createdAt == resource.data.createdAt
+                    && request.resource.data.updatedAt == request.time;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      
+      // Enforce list queries to include ownerId == request.auth.uid
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // -------------------------------------------------------------------------
+    // COSTUREIRAS
+    // -------------------------------------------------------------------------
+
+    function isValidCostureira(data) {
+      return data.size() >= 8
+        && data.keys().hasAll(['id', 'nome', 'telefone', 'especialidade', 'status', 'createdAt', 'updatedAt', 'userId'])
+        && data.id is string && data.id.size() <= 128
+        && data.nome is string && data.nome.size() <= 200 && data.nome.size() > 0
+        && data.telefone is string && data.telefone.size() <= 30
+        && data.especialidade is string && data.especialidade.size() <= 100
+        && data.status in ['ativo', 'inativo']
+        && data.userId is string && data.userId == request.auth.uid;
+    }
+
+    match /prod_costureiras/{costureiraId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(costureiraId) && isValidCostureira(request.resource.data) 
+                    && request.resource.data.id == costureiraId 
+                    && request.resource.data.createdAt == request.time
+                    && request.resource.data.updatedAt == request.time;
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && isValidCostureira(request.resource.data)
+                    && request.resource.data.id == resource.data.id
+                    && request.resource.data.userId == resource.data.userId
+                    && request.resource.data.createdAt == resource.data.createdAt
+                    && request.resource.data.updatedAt == request.time;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // -------------------------------------------------------------------------
+    // COMPRAS (INSUMOS)
+    // -------------------------------------------------------------------------
+
+    function isValidCompra(data) {
+      return data.size() >= 5
+        && data.keys().hasAll(['id', 'userId', 'descricao', 'valorTotal', 'createdAt', 'updatedAt'])
+        && data.id is string
+        && data.userId is string && data.userId == request.auth.uid
+        && data.descricao is string && data.descricao.size() > 0
+        && data.valorTotal is number && data.valorTotal >= 0;
+    }
+
+    match /prod_compras/{compraId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(compraId) && isValidCompra(request.resource.data)
+                    && request.resource.data.id == compraId
+                    && request.resource.data.createdAt == request.time;
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && isValidCompra(request.resource.data)
+                    && request.resource.data.id == resource.data.id
+                    && request.resource.data.userId == resource.data.userId
+                    && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // -------------------------------------------------------------------------
+    // PRODUCOES
+    // -------------------------------------------------------------------------
+
+    function isValidProducao(data) {
+      return data.size() >= 14
+        && data.keys().hasAll(['id', 'produtoId', 'costureiraId', 'quantidadeTotal', 'statusProducao', 'statusEntrega', 
+                              'dataInicio', 'custoTotal', 'custoPorPeca', 'totalEntregue', 'totalPendente', 'userId', 
+                              'createdAt', 'updatedAt'])
+        && data.id is string && data.id.size() <= 128
+        && data.produtoId is string && data.produtoId.size() <= 128
+        && data.costureiraId is string && data.costureiraId.size() <= 128
+        && data.quantidadeTotal is number && data.quantidadeTotal > 0
+        && data.statusProducao is string
+        && data.statusEntrega is string
+        && data.dataInicio is string && data.dataInicio.size() <= 50
+        && data.custoTotal is number && data.custoTotal >= 0
+        && data.custoPorPeca is number && data.custoPorPeca >= 0
+        && data.totalEntregue is number && data.totalEntregue >= 0
+        && data.totalPendente is number && data.totalPendente >= 0
+        && data.userId is string && data.userId == request.auth.uid;
+    }
+
+    match /prod_producoes/{producaoId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(producaoId) && isValidProducao(request.resource.data) 
+                    && request.resource.data.id == producaoId 
+                    && request.resource.data.totalEntregue == 0
+                    && request.resource.data.totalPendente == request.resource.data.quantidadeTotal
+                    && request.resource.data.createdAt == request.time
+                    && request.resource.data.updatedAt == request.time;
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && isValidProducao(request.resource.data)
+                    && request.resource.data.id == resource.data.id
+                    && request.resource.data.userId == resource.data.userId
+                    && request.resource.data.createdAt == resource.data.createdAt
+                    && request.resource.data.updatedAt == request.time;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+
+      // -----------------------------------------------------------------------
+      // ENTREGAS (Subcollection)
+      // -----------------------------------------------------------------------
+      
+      function isValidEntrega(data) {
+        return data.size() >= 5
+          && data.keys().hasAll(['id', 'dataEntrega', 'quantidadeEntregue', 'createdAt', 'userId'])
+          && data.id is string && data.id.size() <= 128
+          && data.dataEntrega is string && data.dataEntrega.size() <= 50
+          && data.quantidadeEntregue is number && data.quantidadeEntregue > 0
+          && data.userId is string && data.userId == request.auth.uid;
+      }
+
+      match /entregas/{entregaId} {
+        allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(entregaId) && isValidEntrega(request.resource.data) 
+                      && request.resource.data.id == entregaId
+                      && request.resource.data.createdAt == request.time
+                      && getAfter(/databases/$(database)/documents/prod_producoes/$(producaoId)).data.updatedAt == request.time; // Enforce atomic update on parent
+        allow update: if false; // Entregas only created or deleted (optional, let's keep it simple and block update)
+        allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+
+        allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      }
+    }
+    // -------------------------------------------------------------------------
+    // CONFIGURACOES
+    // -------------------------------------------------------------------------
+
+    match /configuracoes/{userId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    // -------------------------------------------------------------------------
+    // FINANCEIRO (Despesas Fixas)
+    // -------------------------------------------------------------------------
+
+    match /prod_fixed_expenses/{docId} {
+      allow read, update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+    }
+
+    match /prod_variable_expenses/{docId} {
+      allow read, update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+    }
+
+    match /{path=**}/installments/{installmentId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /prod_accounts_payable/{docId} {
+      allow read, update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      
+      match /installments/{installmentId} {
+        allow read, update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+        allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      }
+    }
+
+    match /prod_credit_cards/{docId} {
+      allow read, update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+    }
+
+    match /expense_categories/{docId} {
+      allow read, update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+    }
+
+    match /financial_settings/{docId} {
+      allow read, update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+    }
+
+    match /prod_returns/{docId} {
+      allow read, update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+    }
+
+    match /prod_companies/{docId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /prod_sales_channels/{docId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /prod_sales_goals/{docId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+
+      match /weekly_results/{resultId} {
+        allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+        allow update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+        allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+        allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      }
+    }
+
+    match /prod_tasks/{taskId} {
+      allow read, update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+
+      match /subtasks/{subtaskId} {
+        allow read, write: if isSignedIn() && get(/databases/$(database)/documents/prod_tasks/$(taskId)).data.userId == request.auth.uid;
+      }
+
+      match /comments/{commentId} {
+        allow read, write: if isSignedIn() && get(/databases/$(database)/documents/prod_tasks/$(taskId)).data.userId == request.auth.uid;
+      }
+    }
+    match /prod_marketplace_calculations/{calculationId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+    }
+    match /prod_garment_calculations/{calculationId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+    }
+    match /prod_market_analysis/{analysisId} {
+      allow read, update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+
+      match /competitors/{competitorId} {
+        allow read, write: if isSignedIn() && get(/databases/$(database)/documents/prod_market_analysis/$(analysisId)).data.userId == request.auth.uid;
+      }
+    }
+  }
+}

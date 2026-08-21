@@ -1,0 +1,246 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --background: #F6F7FB;
+  --foreground: #111827;
+  --card: #FFFFFF;
+  --card-secondary: #FAFAFD;
+  --card-foreground: #111827;
+  --popover: #FFFFFF;
+  --popover-foreground: #111827;
+  --primary: #6D4AFF;
+  --primary-foreground: #FFFFFF;
+  --primary-hover: #5B3DF5;
+  --secondary: #EEEAFE;
+  --secondary-foreground: #6D4AFF;
+  --muted: #EEEAFE;
+  --muted-foreground: #6B7280;
+  --accent: #EEEAFE;
+  --accent-foreground: #6D4AFF;
+  --destructive: #6D4AFF;
+  --destructive-foreground: #FFFFFF;
+  --border: #E8E8F1;
+  --input: #E8E8F1;
+  --ring: #6D4AFF;
+  --radius: 1.75rem;
+  --sidebar: #FFFFFF;
+}
+
+.dark {
+  --background: #0F1117;
+  --foreground: #FFFFFF;
+  --card: #181B24;
+  --card-secondary: #202430;
+  --card-foreground: #FFFFFF;
+  --popover: #181B24;
+  --popover-foreground: #FFFFFF;
+  --primary: #6D4AFF;
+  --primary-foreground: #FFFFFF;
+  --primary-hover: #5B3DF5;
+  --secondary: #9B8CFF;
+  --secondary-foreground: #FFFFFF;
+  --muted: #202430;
+  --muted-foreground: #A5ADBD;
+  --accent: #202430;
+  --accent-foreground: #FFFFFF;
+  --destructive: #6D4AFF;
+  --destructive-foreground: #FFFFFF;
+  --border: #2D3140;
+  --input: #2D3140;
+  --ring: #6D4AFF;
+  --sidebar: #12141C;
+}
+
+@theme inline {
+  --font-heading: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-secondary: var(--card-secondary);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-hover: var(--primary-hover);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-2xl: 1.75rem;
+  --radius-3xl: 2rem;
+  --radius-4xl: 2.5rem;
+  
+  --shadow-premium: 0 12px 32px rgba(15, 23, 42, 0.05);
+  --shadow-premium-dark: 0 18px 45px rgba(0, 0, 0, 0.35);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground tracking-tight font-sans transition-colors duration-300;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+@layer utilities {
+  .glass {
+    background: rgba(255, 255, 255, 0.9);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border: 1px solid var(--border);
+  }
+  .dark .glass {
+    background: rgba(24, 27, 36, 0.9);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border: 1px solid var(--border);
+  }
+  
+  /* Cards */
+  .premium-card {
+    background-color: var(--card);
+    border-radius: var(--radius-2xl);
+    border: 1px solid var(--border);
+    padding: 1.5rem;
+    box-shadow: var(--shadow-premium);
+    transition: transform 250ms ease, box-shadow 250ms ease;
+  }
+  .dark .premium-card {
+    box-shadow: var(--shadow-premium-dark);
+  }
+  .premium-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
+  }
+  .dark .premium-card:hover {
+    box-shadow: 0 24px 50px rgba(0, 0, 0, 0.5);
+  }
+  
+  /* Inputs */
+  .premium-input {
+    min-height: 48px;
+    border-radius: 1rem;
+    background: var(--card);
+    border: 1px solid var(--border);
+    @apply focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all duration-300;
+  }
+  .dark .premium-input {
+    background: var(--card);
+  }
+  
+  /* Table overrides */
+  table {
+    @apply w-full text-sm text-left;
+    border-collapse: separate;
+    border-spacing: 0 8px;
+  }
+  thead {
+    @apply bg-transparent text-muted-foreground font-medium text-[13px] tracking-wide;
+  }
+  th {
+    @apply px-4 py-3 sticky top-0 font-semibold uppercase text-[11px] tracking-wider;
+    border: none;
+  }
+  td {
+    @apply px-4 py-4;
+  }
+  tbody tr {
+    @apply transition-colors duration-250 bg-card hover:bg-secondary/20 shadow-sm hover:shadow-md;
+    border-radius: 12px;
+  }
+  tbody tr td:first-child {
+    border-top-left-radius: 12px;
+    border-bottom-left-radius: 12px;
+  }
+  tbody tr td:last-child {
+    border-top-right-radius: 12px;
+    border-bottom-right-radius: 12px;
+  }
+  tbody tr td {
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+  tbody tr td:first-child {
+    border-left: 1px solid var(--border);
+  }
+  tbody tr td:last-child {
+    border-right: 1px solid var(--border);
+  }
+  .dark tbody tr {
+    @apply hover:bg-card-secondary;
+  }
+
+  /* Recharts custom tooltip */
+  .recharts-tooltip-wrapper .recharts-default-tooltip {
+    background-color: var(--card) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 1rem !important;
+    box-shadow: var(--shadow-premium) !important;
+    color: var(--foreground) !important;
+  }
+  .dark .recharts-tooltip-wrapper .recharts-default-tooltip {
+    box-shadow: var(--shadow-premium-dark) !important;
+  }
+
+  .hide-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .hide-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+@layer utilities {
+  /* Force inputs if not explicitly using class */
+  input:not([type="checkbox"]):not([type="radio"]):not(.premium-input), select, textarea {
+    min-height: 48px;
+    border-radius: 1rem !important;
+    background: var(--card) !important;
+    border: 1px solid var(--border) !important;
+    padding: 0.75rem 1rem;
+    transition: all 0.3s ease;
+  }
+  input:not([type="checkbox"]):not([type="radio"]):focus, select:focus, textarea:focus {
+    outline: none !important;
+    border-color: var(--primary) !important;
+    box-shadow: 0 0 0 2px rgba(109, 74, 255, 0.2) !important;
+  }
+
+  /* Force buttons if primary */
+  .premium-btn-primary {
+    background-color: var(--primary) !important;
+    color: var(--primary-foreground) !important;
+    border-radius: 1rem !important;
+    transition: all 0.25s ease !important;
+    padding: 0.75rem 1.5rem !important;
+    font-weight: 600 !important;
+    border: none !important;
+  }
+  .premium-btn-primary:hover {
+    background-color: var(--primary-hover) !important;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(109, 74, 255, 0.3) !important;
+  }
+}

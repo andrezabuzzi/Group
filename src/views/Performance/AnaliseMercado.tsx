@@ -1,0 +1,824 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { 
+  Search, Plus, Filter, TrendingUp, TrendingDown, DollarSign, Package, AlertCircle, CheckCircle2, 
+  XCircle, Clock, ExternalLink, RefreshCw, BarChart2, Star, Eye, Trash2, Edit2, Copy, FileText, ChevronRight
+} from 'lucide-react';
+import { collection, query, where, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, getDocs } from 'firebase/firestore';
+import { db, auth } from '../../lib/firebase';
+import { format, differenceInDays, parseISO } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
+import { useTheme } from 'next-themes';
+import { Card, CardContent } from '../../components/ui/card';
+import { Button } from '../../components/ui/button';
+import { Input } from '../../components/ui/input';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogClose } from '../../components/ui/dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select';
+import { Textarea } from '../../components/ui/textarea';
+import { cn } from '../../lib/utils';
+import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
+
+type Marketplace = "mercado_livre" | "shopee" | "tiktok_shop" | "shein" | "amazon" | "outro";
+type Status = "em_analise" | "aprovado" | "reprovado" | "teste_em_andamento" | "produto_lancado" | "pausado";
+type Priority = "alta" | "media" | "baixa";
+
+interface MarketAnalysis {
+  id: string;
+  productName: string;
+  category: string;
+  subcategory: string;
+  productImageUrl: string | null;
+  initialNotes: string | null;
+
+  marketplace: Marketplace;
+  listingUrl: string;
+  competitorName: string;
+  listingTitle: string;
+  salePrice: number;
+  salesCount: number;
+  reviewsCount: number;
+  averageRating: number;
+  listingCreatedAt: string | null;
+  listingAgeDays: number | null;
+  shippingType: string | null;
+
+  estimatedProductCost: number;
+  estimatedShippingCost: number;
+  platformFee: number;
+  taxCost: number;
+  packagingCost: number;
+  estimatedAdsCost: number;
+  otherCosts: number;
+
+  estimatedProfit: number;
+  estimatedMarginPercent: number;
+  breakEvenPrice: number;
+  minimumRecommendedPrice: number;
+  idealRecommendedPrice: number;
+
+  competitionLevel: "baixo" | "medio" | "alto" | "muito_alto";
+  productionDifficulty: "facil" | "media" | "dificil";
+  returnRisk: "baixo" | "medio" | "alto";
+  seasonality: "perene" | "sazonal" | "tendencia" | "datas_comemorativas";
+
+  opportunityScore: number;
+  recommendation: string;
+
+  status: Status;
+  priority: Priority;
+
+  createdAt: any;
+  updatedAt: any;
+}
+
+interface Competitor {
+  id: string;
+  marketplace: string;
+  storeName: string;
+  listingUrl: string;
+  salePrice: number;
+  salesCount: number;
+  reviewsCount: number;
+  averageRating: number;
+  listingCreatedAt: string | null;
+  listingAgeDays: number | null;
+  notes: string | null;
+}
+
+const CATEGORIES = [
+  'Moda Feminina', 'Moda Plus Size', 'Moda Infantil', 'Fitness', 
+  'Acessórios', 'Inverno', 'Casa', 'Beleza', 'Autopeças', 'Outros'
+];
+
+const MARKETPLACES: { value: Marketplace, label: string, color: string }[] = [
+  { value: 'mercado_livre', label: 'Mercado Livre', color: 'text-yellow-600 bg-yellow-100' },
+  { value: 'shopee', label: 'Shopee', color: 'text-orange-600 bg-orange-100' },
+  { value: 'tiktok_shop', label: 'TikTok Shop', color: 'text-slate-900 bg-slate-200' },
+  { value: 'shein', label: 'Shein', color: 'text-zinc-900 bg-zinc-200' },
+  { value: 'amazon', label: 'Amazon', color: 'text-blue-800 bg-blue-100' },
+  { value: 'outro', label: 'Outro', color: 'text-gray-600 bg-gray-100' }
+];
+
+const STATUS_CONFIG: Record<Status, { label: string, bg: string, text: string }> = {
+  em_analise: { label: 'Em Análise', bg: 'bg-amber-100 dark:bg-amber-900/30', text: 'text-amber-600' },
+  aprovado: { label: 'Aprovado', bg: 'bg-emerald-100 dark:bg-emerald-900/30', text: 'text-emerald-600' },
+  reprovado: { label: 'Reprovado', bg: 'bg-red-100 dark:bg-red-900/30', text: 'text-red-600' },
+  teste_em_andamento: { label: 'Teste', bg: 'bg-blue-100 dark:bg-blue-900/30', text: 'text-blue-600' },
+  produto_lancado: { label: 'Lançado', bg: 'bg-indigo-100 dark:bg-indigo-900/30', text: 'text-indigo-600' },
+  pausado: { label: 'Pausado', bg: 'bg-slate-100 dark:bg-slate-800', text: 'text-slate-600' }
+};
+
+const PRIORITY_CONFIG: Record<Priority, { label: string, color: string }> = {
+  alta: { label: 'Alta', color: 'text-red-500' },
+  media: { label: 'Média', color: 'text-orange-500' },
+  baixa: { label: 'Baixa', color: 'text-emerald-500' }
+};
+
+export default function AnaliseMercado() {
+  const { theme } = useTheme();
+  const isDark = theme === 'dark';
+
+  const [analyses, setAnalyses] = useState<MarketAnalysis[]>([]);
+  const [search, setSearch] = useState('');
+  const [filterMarketplace, setFilterMarketplace] = useState<string>('todos');
+  const [filterStatus, setFilterStatus] = useState<string>('todos');
+
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isDetailOpen, setIsDetailOpen] = useState(false);
+  const [selectedAnalysis, setSelectedAnalysis] = useState<MarketAnalysis | null>(null);
+  const [competitors, setCompetitors] = useState<Competitor[]>([]);
+
+  // Form states
+  const [formData, setFormData] = useState<Partial<MarketAnalysis>>({
+    productName: '', category: '', subcategory: '', productImageUrl: '', initialNotes: '',
+    marketplace: 'mercado_livre', listingUrl: '', competitorName: '', listingTitle: '',
+    salePrice: 0, salesCount: 0, reviewsCount: 0, averageRating: 0, listingCreatedAt: '', shippingType: '',
+    estimatedProductCost: 0, estimatedShippingCost: 0, platformFee: 0, taxCost: 0, packagingCost: 0, estimatedAdsCost: 0, otherCosts: 0,
+    competitionLevel: 'medio', productionDifficulty: 'media', returnRisk: 'medio', seasonality: 'perene',
+    status: 'em_analise', priority: 'media'
+  });
+
+  useEffect(() => {
+    const user = auth.currentUser;
+    if (!user) return;
+
+    const q = query(collection(db, 'prod_market_analysis'), where('userId', '==', user.uid));
+    const unsub = onSnapshot(q, (snap) => {
+      setAnalyses(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as MarketAnalysis)));
+    });
+
+    return () => unsub();
+  }, []);
+
+  const resetForm = () => {
+    setFormData({
+      productName: '', category: '', subcategory: '', productImageUrl: '', initialNotes: '',
+      marketplace: 'mercado_livre', listingUrl: '', competitorName: '', listingTitle: '',
+      salePrice: 0, salesCount: 0, reviewsCount: 0, averageRating: 0, listingCreatedAt: '', shippingType: '',
+      estimatedProductCost: 0, estimatedShippingCost: 0, platformFee: 0, taxCost: 0, packagingCost: 0, estimatedAdsCost: 0, otherCosts: 0,
+      competitionLevel: 'medio', productionDifficulty: 'media', returnRisk: 'medio', seasonality: 'perene',
+      status: 'em_analise', priority: 'media'
+    });
+    setSelectedAnalysis(null);
+  };
+
+  const handleOpenNew = () => {
+    resetForm();
+    setIsModalOpen(true);
+  };
+
+  const calculateInsights = (data: Partial<MarketAnalysis>) => {
+    const totalCosts = (Number(data.estimatedProductCost)||0) + (Number(data.estimatedShippingCost)||0) + 
+                       (Number(data.platformFee)||0) + (Number(data.taxCost)||0) + 
+                       (Number(data.packagingCost)||0) + (Number(data.estimatedAdsCost)||0) + (Number(data.otherCosts)||0);
+    const saleP = Number(data.salePrice)||0;
+    
+    const profit = saleP - totalCosts;
+    const margin = saleP > 0 ? (profit / saleP) * 100 : 0;
+    
+    // Calculate simple break-even (price where profit is 0)
+    const breakEven = totalCosts;
+    const minRecommend = totalCosts * 1.25; // 20% margin target min
+    const idealRecommend = totalCosts * 1.5; // ~33% margin target
+
+    // Opportunity Score (0-100)
+    let score = 0;
+    const sales = Number(data.salesCount)||0;
+    
+    // Sales weight (max 30)
+    if (sales > 10000) score += 30;
+    else if (sales > 1000) score += 20;
+    else if (sales > 100) score += 10;
+    else if (sales > 10) score += 5;
+
+    // Margin weight (max 35)
+    if (margin > 40) score += 35;
+    else if (margin > 25) score += 25;
+    else if (margin > 15) score += 15;
+    else if (margin > 5) score += 5;
+
+    // Competition weight (max 15)
+    if (data.competitionLevel === 'baixo') score += 15;
+    else if (data.competitionLevel === 'medio') score += 10;
+    else if (data.competitionLevel === 'alto') score += 5;
+
+    // Prod Difficulty (max 10)
+    if (data.productionDifficulty === 'facil') score += 10;
+    else if (data.productionDifficulty === 'media') score += 5;
+
+    // Return Risk (max 10)
+    if (data.returnRisk === 'baixo') score += 10;
+    else if (data.returnRisk === 'medio') score += 5;
+
+    let rec = "";
+    if (score >= 80) rec = "Excelente oportunidade para escalar. Margem forte com boas vendas.";
+    else if (score >= 60) rec = "Boa oportunidade para testar com baixo estoque. Produto promissor.";
+    else if (score >= 40) rec = "Oportunidade moderada. Monitore ou tente reduzir custos.";
+    else rec = "Não recomendado no momento. Risco alto ou margem muito apertada.";
+
+    // Days since created if provided
+    let daysAge = null;
+    if (data.listingCreatedAt) {
+       daysAge = differenceInDays(new Date(), parseISO(data.listingCreatedAt));
+    }
+
+    return {
+      estimatedProfit: profit,
+      estimatedMarginPercent: margin,
+      breakEvenPrice: breakEven,
+      minimumRecommendedPrice: minRecommend,
+      idealRecommendedPrice: idealRecommend,
+      opportunityScore: score,
+      recommendation: rec,
+      listingAgeDays: daysAge
+    };
+  };
+
+  const handleSave = async () => {
+    const user = auth.currentUser;
+    if (!user || !formData.productName || !formData.marketplace || !formData.listingUrl || formData.salePrice === undefined) return;
+
+    const insights = calculateInsights(formData);
+
+    const dataToSave = {
+      ...formData,
+      ...insights,
+      userId: user.uid,
+      updatedAt: serverTimestamp()
+    };
+
+    if (selectedAnalysis && !isDetailOpen) {
+      await updateDoc(doc(db, 'prod_market_analysis', selectedAnalysis.id), dataToSave);
+    } else {
+      await addDoc(collection(db, 'prod_market_analysis'), {
+        ...dataToSave,
+        createdAt: serverTimestamp()
+      });
+    }
+
+    setIsModalOpen(false);
+  };
+
+  const handleDelete = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if(confirm('Excluir esta análise?')) {
+      await deleteDoc(doc(db, 'prod_market_analysis', id));
+    }
+  };
+
+  const formatMoney = (val: number) => {
+    return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
+  };
+
+  const filteredAnalyses = useMemo(() => {
+    return analyses.filter(a => {
+      const matchSearch = a.productName.toLowerCase().includes(search.toLowerCase()) || 
+                          a.competitorName.toLowerCase().includes(search.toLowerCase());
+      const matchMarket = filterMarketplace === 'todos' || a.marketplace === filterMarketplace;
+      const matchStatus = filterStatus === 'todos' || a.status === filterStatus;
+      return matchSearch && matchMarket && matchStatus;
+    }).sort((a,b) => b.opportunityScore - a.opportunityScore); // sort by score desc
+  }, [analyses, search, filterMarketplace, filterStatus]);
+
+  const stats = useMemo(() => {
+    const total = analyses.length;
+    const highOpp = analyses.filter(a => a.opportunityScore >= 70).length;
+    const avgMargin = total > 0 ? analyses.reduce((s,a) => s + (a.estimatedMarginPercent || 0), 0) / total : 0;
+    const approved = analyses.filter(a => a.status === 'aprovado' || a.status === 'produto_lancado').length;
+    const testing = analyses.filter(a => a.status === 'teste_em_andamento').length;
+
+    return { total, highOpp, avgMargin, approved, testing };
+  }, [analyses]);
+
+  const openDetail = async (analysis: MarketAnalysis) => {
+    setSelectedAnalysis(analysis);
+    const q = query(collection(db, `prod_market_analysis/${analysis.id}/competitors`));
+    const snap = await getDocs(q);
+    setCompetitors(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Competitor)));
+    setIsDetailOpen(true);
+  };
+
+  const renderOpportunityBadge = (score: number) => {
+    let color = 'bg-slate-100 text-slate-700';
+    if (score >= 80) color = 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400';
+    else if (score >= 60) color = 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400';
+    else if (score >= 40) color = 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400';
+    else color = 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400';
+    
+    return (
+      <div className={cn("flex flex-col items-center justify-center p-2 rounded-xl text-center", color)}>
+        <span className="text-[10px] font-black uppercase tracking-wider opacity-80">Nota</span>
+        <span className="text-xl font-black">{score}</span>
+      </div>
+    );
+  };
+
+  // Dashboard charts data
+  const chartsData = useMemo(() => {
+    const statusMap = new Map<string, number>();
+    const marketMap = new Map<string, number>();
+    
+    analyses.forEach(a => {
+       statusMap.set(a.status, (statusMap.get(a.status) || 0) + 1);
+       marketMap.set(a.marketplace, (marketMap.get(a.marketplace) || 0) + 1);
+    });
+
+    const statusChart = Array.from(statusMap.entries()).map(([k,v]) => ({
+       name: STATUS_CONFIG[k as Status]?.label || k, value: v,
+       fill: k === 'aprovado' ? '#6D4AFF' : k === 'reprovado' ? '#A5ADBD' : '#6D4AFF'
+    }));
+    
+    const marketChart = Array.from(marketMap.entries()).map(([name, value]) => ({ name, value }));
+
+    return { statusChart, marketChart };
+  }, [analyses]);
+
+  return (
+    <div className="flex-1 p-4 md:p-8 pt-6 max-w-none mx-auto w-full transition-all flex flex-col gap-6">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+         <div>
+            <h1 className="text-4xl font-black tracking-tight text-foreground -ml-[2px] leading-tight">Análise de Mercado</h1>
+            <p className="text-muted-foreground font-medium mt-1">Analise concorrentes, preços, vendas e oportunidades para novos produtos.</p>
+         </div>
+         <div className="flex flex-col md:flex-row gap-2 w-full md:w-auto">
+           <Button variant="outline" className="rounded-xl h-12 px-5 font-bold shadow-sm md:w-auto w-full"><FileText className="w-4 h-4 mr-2" /> Exportar</Button>
+           <Button onClick={handleOpenNew} className="rounded-xl h-12 px-6 font-black tracking-wider uppercase text-sm shadow-md bg-indigo-600 hover:bg-indigo-700 transition-all shrink-0 w-full md:w-auto">
+              <Plus className="w-4 h-4 mr-2" /> Nova Análise
+           </Button>
+         </div>
+      </div>
+
+      <div className="flex gap-4 overflow-x-auto hide-scrollbar pb-2 w-full snap-x">
+         <Card className="rounded-[1.5rem] bg-indigo-600 border-none text-white shadow-md min-w-[200px] shrink-0 snap-start">
+           <CardContent className="p-5 flex flex-col justify-center">
+             <div className="text-[10px] font-bold text-indigo-200 uppercase tracking-wider mb-1">Oportunidades Cadastradas</div>
+             <div className="text-3xl font-black">{stats.total}</div>
+           </CardContent>
+         </Card>
+         <Card className="rounded-[1.5rem] border-border shadow-sm min-w-[200px] shrink-0 snap-start">
+           <CardContent className="p-5 flex flex-col justify-center">
+             <div className="text-[10px] font-bold text-emerald-500 uppercase tracking-wider mb-1">Alta Oportunidade {'>'}70</div>
+             <div className="text-3xl font-black text-foreground">{stats.highOpp}</div>
+           </CardContent>
+         </Card>
+         <Card className="rounded-[1.5rem] border-border shadow-sm min-w-[200px] shrink-0 snap-start">
+           <CardContent className="p-5 flex flex-col justify-center">
+             <div className="text-[10px] font-bold text-blue-500 uppercase tracking-wider mb-1">Margem Média Geral</div>
+             <div className="text-3xl font-black text-foreground">{stats.avgMargin.toFixed(1)}%</div>
+           </CardContent>
+         </Card>
+         <Card className="rounded-[1.5rem] border-border shadow-sm min-w-[200px] shrink-0 snap-start">
+           <CardContent className="p-5 flex flex-col justify-center">
+             <div className="text-[10px] font-bold text-amber-500 uppercase tracking-wider mb-1">Produtos Aprovados</div>
+             <div className="text-3xl font-black text-foreground">{stats.approved}</div>
+           </CardContent>
+         </Card>
+      </div>
+
+      <div className="flex flex-col md:flex-row gap-4 justify-between items-center p-2 px-4 rounded-[1.5rem] border border-border shadow-sm">
+        <div className="relative w-full md:w-96 shrink-0">
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
+          <Input 
+            value={search} onChange={e=>setSearch(e.target.value)}
+            className="pl-12 h-12 w-full rounded-xl bg-muted/30 border-transparent font-medium" 
+            placeholder="Buscar produto ou concorrente..." 
+          />
+        </div>
+        <div className="flex gap-2 w-full md:w-auto overflow-x-auto hide-scrollbar">
+          <Select value={filterMarketplace} onValueChange={setFilterMarketplace}>
+            <SelectTrigger className="w-[180px] h-12 rounded-xl font-bold bg-muted/30 border-transparent"><SelectValue placeholder="Marketplace" /></SelectTrigger>
+            <SelectContent className="rounded-xl">
+              <SelectItem value="todos">Todos</SelectItem>
+              {MARKETPLACES.map(m => <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Select value={filterStatus} onValueChange={setFilterStatus}>
+            <SelectTrigger className="w-[180px] h-12 rounded-xl font-bold bg-muted/30 border-transparent"><SelectValue placeholder="Status" /></SelectTrigger>
+            <SelectContent className="rounded-xl">
+              <SelectItem value="todos">Todos os Status</SelectItem>
+              {Object.entries(STATUS_CONFIG).map(([k,v]) => <SelectItem key={k} value={k}>{v.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {filteredAnalyses.map(analysis => (
+          <Card key={analysis.id} className="rounded-3xl border-border overflow-hidden hover:shadow-md transition-all cursor-pointer border border-transparent hover:border-indigo-500/30 group flex flex-col" onClick={() => openDetail(analysis)}>
+             <div className="p-5 flex-1 space-y-4">
+                <div className="flex justify-between items-start gap-4">
+                   <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className={cn("text-[9px] font-black uppercase px-2 py-0.5 rounded-full", STATUS_CONFIG[analysis.status].bg, STATUS_CONFIG[analysis.status].text)}>
+                           {STATUS_CONFIG[analysis.status].label}
+                        </span>
+                        <span className="text-[9px] font-bold bg-muted text-muted-foreground px-2 py-0.5 rounded-full">
+                           {MARKETPLACES.find(m => m.value === analysis.marketplace)?.label}
+                        </span>
+                      </div>
+                      <h3 className="font-black leading-tight text-lg text-foreground line-clamp-2">{analysis.productName}</h3>
+                      <p className="text-xs font-semibold text-muted-foreground mt-1 flex items-center gap-1"><Store className="w-3.5 h-3.5" /> {analysis.competitorName || 'N/A'}</p>
+                   </div>
+                   {renderOpportunityBadge(analysis.opportunityScore)}
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 pt-3 border-t border-border/50">
+                   <div>
+                      <div className="text-[10px] font-black uppercase text-muted-foreground">Preço Médio</div>
+                      <div className="font-bold text-foreground">{formatMoney(analysis.salePrice)}</div>
+                   </div>
+                   <div>
+                      <div className="text-[10px] font-black uppercase text-emerald-600">Margem Estimada</div>
+                      <div className="font-black text-emerald-600">{analysis.estimatedMarginPercent?.toFixed(1) || 0}%</div>
+                   </div>
+                   <div>
+                      <div className="text-[10px] font-black uppercase text-muted-foreground">Vendas Confirmadas</div>
+                      <div className="font-bold text-foreground">{analysis.salesCount || 0} unid.</div>
+                   </div>
+                   <div>
+                      <div className="text-[10px] font-black uppercase text-muted-foreground">Concorrência</div>
+                      <div className="font-bold text-foreground capitalize">{analysis.competitionLevel?.replace('_', ' ')}</div>
+                   </div>
+                </div>
+             </div>
+             <div className="p-3 bg-muted/30 border-t border-border flex justify-between items-center px-5">
+                <div className="text-xs font-semibold text-muted-foreground truncate w-full pr-4" title={analysis.recommendation}>
+                  {analysis.recommendation}
+                </div>
+                <div className="flex items-center gap-2 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-indigo-600" onClick={(e) => { e.stopPropagation(); setFormData(analysis); setSelectedAnalysis(analysis); setIsModalOpen(true); }}><Edit2 className="w-4 h-4" /></Button>
+                  <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-red-500" onClick={(e) => handleDelete(analysis.id, e)}><Trash2 className="w-4 h-4" /></Button>
+                </div>
+             </div>
+          </Card>
+        ))}
+        {filteredAnalyses.length === 0 && (
+          <div className="col-span-full py-16 flex flex-col flex-1 items-center justify-center border-2 border-dashed border-border rounded-3xl">
+             <Package className="w-12 h-12 text-muted-foreground mb-4 opacity-50" />
+             <h3 className="font-black text-xl text-foreground">Nenhuma análise encontrada</h3>
+             <p className="text-muted-foreground font-medium mt-1">Comece mapeando os produtos dos concorrentes.</p>
+             <Button onClick={handleOpenNew} className="mt-6 rounded-xl font-bold bg-indigo-600 hover:bg-indigo-700">Criar Primeira Análise</Button>
+          </div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 pb-12 mt-4">
+        {chartsData.statusChart.length > 0 && (
+          <Card className="rounded-3xl border-border shadow-sm">
+             <div className="p-6 border-b border-border/50">
+               <h3 className="font-black text-foreground">Status das Oportunidades</h3>
+             </div>
+             <CardContent className="p-6 h-[300px]">
+                <ResponsiveContainer width="100%" height="100%">
+                   <PieChart>
+                      <Pie data={chartsData.statusChart} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
+                         {chartsData.statusChart.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.fill} />)}
+                      </Pie>
+                      <RechartsTooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                   </PieChart>
+                </ResponsiveContainer>
+             </CardContent>
+          </Card>
+        )}
+        
+        {chartsData.marketChart.length > 0 && (
+          <Card className="rounded-3xl border-border shadow-sm">
+             <div className="p-6 border-b border-border/50">
+               <h3 className="font-black text-foreground">Distribuição por Marketplace</h3>
+             </div>
+             <CardContent className="p-6 h-[300px]">
+                <ResponsiveContainer width="100%" height="100%">
+                   <BarChart data={chartsData.marketChart}>
+                      <XAxis dataKey="name" tick={{ fontSize: 10, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                      <RechartsTooltip cursor={{ fill: 'transparent' }} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                      <Bar dataKey="value" fill="#6D4AFF" radius={[6, 6, 0, 0]} />
+                   </BarChart>
+                </ResponsiveContainer>
+             </CardContent>
+          </Card>
+        )}
+      </div>
+
+      {/* Modal - Edit/New Analysis */}
+      <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
+         <DialogContent className="rounded-3xl border-border max-w-4xl max-h-[90vh] overflow-y-auto p-0 flex flex-col hide-scrollbar">
+            <div className="sticky top-0/80 backdrop-blur-md z-10 border-b border-border px-8 py-5 flex items-center justify-between">
+              <div>
+                <DialogTitle className="font-black text-2xl text-foreground">{selectedAnalysis ? 'Editar Análise' : 'Nova Análise de Mercado'}</DialogTitle>
+                <p className="text-sm font-medium text-muted-foreground mt-1">Mapeie custos e encontre oportunidades.</p>
+              </div>
+              <DialogClose className="rounded-full p-2 hover:bg-muted transition-colors"><XCircle className="w-5 h-5 text-muted-foreground" /></DialogClose>
+            </div>
+
+            <div className="p-8 space-y-10 flex-1">
+               {/* 1. Dados do Produto */}
+               <section className="space-y-4">
+                 <h3 className="font-black text-indigo-600 uppercase tracking-wider text-xs flex items-center gap-2 border-b border-border/50 pb-2"><Package className="w-4 h-4" /> 1. O que vamos vender?</h3>
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                   <div className="space-y-2 md:col-span-2">
+                     <label className="text-[11px] font-black uppercase tracking-wider text-muted-foreground">Nome do Produto *</label>
+                     <Input value={formData.productName || ''} onChange={e=>setFormData({...formData, productName: e.target.value})} className="h-14 text-xl font-black rounded-2xl bg-muted/30 border-transparent focus-visible:ring-indigo-500" placeholder="Ex: Cropped Brasil Copa" />
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-[11px] font-black uppercase tracking-wider text-muted-foreground">Categoria</label>
+                     <Select value={formData.category || ''} onValueChange={v=>setFormData({...formData, category:v})}>
+                        <SelectTrigger className="h-12 rounded-xl font-bold bg-background shadow-sm border-border">
+                          <SelectValue placeholder="Selecione" />
+                        </SelectTrigger>
+                        <SelectContent className="rounded-xl">
+                          {CATEGORIES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                        </SelectContent>
+                     </Select>
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-[11px] font-black uppercase tracking-wider text-muted-foreground">Subcategoria</label>
+                     <Input value={formData.subcategory || ''} onChange={e=>setFormData({...formData, subcategory: e.target.value})} className="h-12 rounded-xl font-bold bg-background shadow-sm" placeholder="Ex: Cropped" />
+                   </div>
+                   <div className="space-y-2 md:col-span-2">
+                     <label className="text-[11px] font-black uppercase tracking-wider text-muted-foreground">Observação Inicial</label>
+                     <Textarea value={formData.initialNotes || ''} onChange={e=>setFormData({...formData, initialNotes: e.target.value})} className="min-h-[80px] rounded-xl font-medium bg-background shadow-sm resize-none" placeholder="O que chamou atenção nesse produto?" />
+                   </div>
+                 </div>
+               </section>
+
+               {/* 2. Dados do Anuncio */}
+               <section className="space-y-4">
+                 <h3 className="font-black text-indigo-600 uppercase tracking-wider text-xs flex items-center gap-2 border-b border-border/50 pb-2"><Store className="w-4 h-4" /> 2. Referência (Concorrente Principal)</h3>
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                     <label className="text-[11px] font-black uppercase tracking-wider text-muted-foreground text-red-500">Marketplace *</label>
+                     <Select value={formData.marketplace || 'mercado_livre'} onValueChange={(v:Marketplace)=>setFormData({...formData, marketplace:v})}>
+                        <SelectTrigger className="h-12 rounded-xl font-bold bg-background shadow-sm border-border">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent className="rounded-xl">
+                          {MARKETPLACES.map(m => <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>)}
+                        </SelectContent>
+                     </Select>
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-[11px] font-black uppercase tracking-wider text-muted-foreground text-red-500">Link do Anúncio *</label>
+                     <Input value={formData.listingUrl || ''} onChange={e=>setFormData({...formData, listingUrl: e.target.value})} className="h-12 rounded-xl font-medium bg-background shadow-sm text-xs" placeholder="https://..." />
+                   </div>
+                   <div className="space-y-2 md:col-span-2">
+                     <label className="text-[11px] font-black uppercase tracking-wider text-muted-foreground">Loja / Vendedor</label>
+                     <Input value={formData.competitorName || ''} onChange={e=>setFormData({...formData, competitorName: e.target.value})} className="h-12 rounded-xl font-bold bg-background shadow-sm" placeholder="Nome da loja concorrente" />
+                   </div>
+                   
+                   <div className="space-y-2">
+                     <label className="text-[11px] font-black uppercase tracking-wider text-emerald-600">Preço Vendido R$ *</label>
+                     <Input type="number" value={formData.salePrice || ''} onChange={e=>setFormData({...formData, salePrice: Number(e.target.value)})} className="h-14 font-black text-2xl text-emerald-600 bg-emerald-50 border-emerald-200 rounded-2xl" placeholder="0.00" />
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-[11px] font-black uppercase tracking-wider text-indigo-600">Nº de Vendas</label>
+                     <Input type="number" value={formData.salesCount || ''} onChange={e=>setFormData({...formData, salesCount: Number(e.target.value)})} className="h-14 font-black text-xl text-indigo-600 bg-indigo-50 border-indigo-200 rounded-2xl" placeholder="0" />
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-[11px] font-black uppercase tracking-wider text-muted-foreground">Criado em (Data do Anúncio)</label>
+                     <Input type="date" value={formData.listingCreatedAt || ''} onChange={e=>setFormData({...formData, listingCreatedAt: e.target.value})} className="h-12 rounded-xl font-bold bg-background shadow-sm" />
+                   </div>
+                 </div>
+               </section>
+
+               {/* 3. Custos */}
+               <section className="space-y-4 bg-muted/30 p-6 rounded-3xl border border-border/50">
+                 <h3 className="font-black text-indigo-600 uppercase tracking-wider text-xs flex items-center gap-2 border-b border-border/50 pb-2"><DollarSign className="w-4 h-4" /> 3. Custos & Margens</h3>
+                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                   <div className="space-y-1">
+                     <label className="text-[10px] font-black uppercase tracking-wider text-muted-foreground">Custo Prod. R$</label>
+                     <Input type="number" value={formData.estimatedProductCost || ''} onChange={e=>setFormData({...formData, estimatedProductCost: Number(e.target.value)})} className="h-11 rounded-lg font-bold" />
+                   </div>
+                   <div className="space-y-1">
+                     <label className="text-[10px] font-black uppercase tracking-wider text-muted-foreground">Taxa Platf. R$</label>
+                     <Input type="number" value={formData.platformFee || ''} onChange={e=>setFormData({...formData, platformFee: Number(e.target.value)})} className="h-11 rounded-lg font-bold" />
+                   </div>
+                   <div className="space-y-1">
+                     <label className="text-[10px] font-black uppercase tracking-wider text-muted-foreground">Impostos R$</label>
+                     <Input type="number" value={formData.taxCost || ''} onChange={e=>setFormData({...formData, taxCost: Number(e.target.value)})} className="h-11 rounded-lg font-bold" />
+                   </div>
+                   <div className="space-y-1">
+                     <label className="text-[10px] font-black uppercase tracking-wider text-muted-foreground">Embalagem R$</label>
+                     <Input type="number" value={formData.packagingCost || ''} onChange={e=>setFormData({...formData, packagingCost: Number(e.target.value)})} className="h-11 rounded-lg font-bold" />
+                   </div>
+                   <div className="space-y-1">
+                     <label className="text-[10px] font-black uppercase tracking-wider text-muted-foreground">ADS R$</label>
+                     <Input type="number" value={formData.estimatedAdsCost || ''} onChange={e=>setFormData({...formData, estimatedAdsCost: Number(e.target.value)})} className="h-11 rounded-lg font-bold" />
+                   </div>
+                   <div className="space-y-1">
+                     <label className="text-[10px] font-black uppercase tracking-wider text-muted-foreground">Frete Custo R$</label>
+                     <Input type="number" value={formData.estimatedShippingCost || ''} onChange={e=>setFormData({...formData, estimatedShippingCost: Number(e.target.value)})} className="h-11 rounded-lg font-bold" />
+                   </div>
+                 </div>
+
+                 {/* Preview Automatico Margem */}
+                 {(() => {
+                    const insights = calculateInsights(formData);
+                    return (
+                       <div className="mt-4 bg-white dark:bg-black p-4 rounded-2xl flex justify-between items-center border border-border shadow-sm">
+                         <div>
+                            <div className="text-[10px] font-black uppercase text-muted-foreground tracking-wider">Lucro Estimado por Unid.</div>
+                            <div className={cn("text-2xl font-black", insights.estimatedProfit > 0 ? "text-emerald-500" : "text-red-500")}>
+                               {formatMoney(insights.estimatedProfit)}
+                            </div>
+                         </div>
+                         <div className="text-right">
+                            <div className="text-[10px] font-black uppercase text-muted-foreground tracking-wider">Margem %</div>
+                            <div className={cn("text-2xl font-black", insights.estimatedMarginPercent > 20 ? "text-emerald-500" : insights.estimatedMarginPercent > 0 ? "text-amber-500" : "text-red-500")}>
+                               {insights.estimatedMarginPercent.toFixed(1)}%
+                            </div>
+                         </div>
+                       </div>
+                    );
+                 })()}
+               </section>
+
+               {/* 4. Avaliacao Manual */}
+               <section className="space-y-4">
+                 <h3 className="font-black text-indigo-600 uppercase tracking-wider text-xs flex items-center gap-2 border-b border-border/50 pb-2"><TrendingUp className="w-4 h-4" /> 4. Avaliação Qualitativa</h3>
+                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                   <div className="space-y-2">
+                     <label className="text-[10px] font-black uppercase tracking-wider text-muted-foreground">Concorrência</label>
+                     <Select value={formData.competitionLevel || 'medio'} onValueChange={(v:any)=>setFormData({...formData, competitionLevel:v})}>
+                        <SelectTrigger className="h-11 rounded-lg font-bold text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent><SelectItem value="baixo">Baixa</SelectItem><SelectItem value="medio">Média</SelectItem><SelectItem value="alto">Alta</SelectItem><SelectItem value="muito_alto">Muito Alta</SelectItem></SelectContent>
+                     </Select>
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-[10px] font-black uppercase tracking-wider text-muted-foreground">Dificuldade Prod.</label>
+                     <Select value={formData.productionDifficulty || 'media'} onValueChange={(v:any)=>setFormData({...formData, productionDifficulty:v})}>
+                        <SelectTrigger className="h-11 rounded-lg font-bold text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent><SelectItem value="facil">Fácil</SelectItem><SelectItem value="media">Média</SelectItem><SelectItem value="dificil">Difícil</SelectItem></SelectContent>
+                     </Select>
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-[10px] font-black uppercase tracking-wider text-muted-foreground">Risco Devolução</label>
+                     <Select value={formData.returnRisk || 'medio'} onValueChange={(v:any)=>setFormData({...formData, returnRisk:v})}>
+                        <SelectTrigger className="h-11 rounded-lg font-bold text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent><SelectItem value="baixo">Baixo</SelectItem><SelectItem value="medio">Médio</SelectItem><SelectItem value="alto">Alto</SelectItem></SelectContent>
+                     </Select>
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-[10px] font-black uppercase tracking-wider text-muted-foreground">Sazonalidade</label>
+                     <Select value={formData.seasonality || 'perene'} onValueChange={(v:any)=>setFormData({...formData, seasonality:v})}>
+                        <SelectTrigger className="h-11 rounded-lg font-bold text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent><SelectItem value="perene">Perene</SelectItem><SelectItem value="sazonal">Sazonal</SelectItem><SelectItem value="tendencia">Tendência</SelectItem><SelectItem value="datas_comemorativas">Datas Comem.</SelectItem></SelectContent>
+                     </Select>
+                   </div>
+                 </div>
+
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 pt-4 border-t border-border">
+                    <div className="space-y-2">
+                     <label className="text-[11px] font-black uppercase tracking-wider text-muted-foreground">Status Atual *</label>
+                     <Select value={formData.status || 'em_analise'} onValueChange={(v:Status)=>setFormData({...formData, status:v})}>
+                        <SelectTrigger className="h-12 rounded-xl font-bold bg-background shadow-sm border-border"><SelectValue /></SelectTrigger>
+                        <SelectContent className="rounded-xl">
+                          {Object.entries(STATUS_CONFIG).map(([k,v]) => <SelectItem key={k} value={k}>{v.label}</SelectItem>)}
+                        </SelectContent>
+                     </Select>
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-[11px] font-black uppercase tracking-wider text-muted-foreground">Prioridade *</label>
+                     <Select value={formData.priority || 'media'} onValueChange={(v:Priority)=>setFormData({...formData, priority:v})}>
+                        <SelectTrigger className="h-12 rounded-xl font-bold bg-background shadow-sm border-border"><SelectValue /></SelectTrigger>
+                        <SelectContent className="rounded-xl">
+                          {Object.entries(PRIORITY_CONFIG).map(([k,v]) => <SelectItem key={k} value={k}>{v.label}</SelectItem>)}
+                        </SelectContent>
+                     </Select>
+                   </div>
+                 </div>
+               </section>
+            </div>
+            <div className="p-6 border-t border-border bg-muted/20 flex justify-end gap-3 sticky bottom-0">
+               <Button variant="ghost" onClick={() => setIsModalOpen(false)} className="rounded-xl font-bold">Cancelar</Button>
+               <Button onClick={handleSave} className="rounded-xl px-10 h-12 font-black uppercase tracking-wider bg-indigo-600 hover:bg-indigo-700 shadow-md">Salvar Análise</Button>
+            </div>
+         </DialogContent>
+      </Dialog>
+
+      {/* Modal - Detail */}
+      <Dialog open={isDetailOpen} onOpenChange={setIsDetailOpen}>
+        <DialogContent className="rounded-3xl border-border max-w-5xl max-h-[90vh] overflow-y-auto p-0 flex flex-col hide-scrollbar">
+           {selectedAnalysis && (
+              <>
+                 <div className="sticky top-0/80 backdrop-blur-md z-10 border-b border-border px-8 py-5 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <span className={cn("px-3 py-1 rounded-lg text-[10px] uppercase font-black shadow-sm", STATUS_CONFIG[selectedAnalysis.status].bg, STATUS_CONFIG[selectedAnalysis.status].text)}>
+                      {STATUS_CONFIG[selectedAnalysis.status].label}
+                    </span>
+                    <span className="px-3 py-1 bg-muted text-muted-foreground rounded-lg text-[10px] uppercase font-black">
+                       {MARKETPLACES.find(m => m.value === selectedAnalysis.marketplace)?.label}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" onClick={() => { setIsDetailOpen(false); handleOpenNew(); setFormData(selectedAnalysis); }} className="rounded-xl font-bold h-9 bg-background"><Copy className="w-4 h-4 mr-2" /> Duplicar</Button>
+                    <Button variant="default" size="sm" onClick={() => { setIsDetailOpen(false); setFormData(selectedAnalysis); setIsModalOpen(true); }} className="rounded-xl font-bold h-9 bg-indigo-600 hover:bg-indigo-700"><Edit2 className="w-4 h-4 mr-2" /> Editar</Button>
+                    <DialogClose className="rounded-full p-2 hover:bg-muted transition-colors"><XCircle className="w-5 h-5 text-muted-foreground" /></DialogClose>
+                  </div>
+                </div>
+
+                <div className="p-8 space-y-8 flex-1 bg-muted/10">
+                   {/* Cabeçalho Resumo */}
+                   <div className="flex justify-between items-start gap-6">
+                      <div>
+                         <h2 className="text-4xl font-black text-foreground leading-tight tracking-tight">{selectedAnalysis.productName}</h2>
+                         <p className="text-muted-foreground font-semibold flex items-center gap-2 mt-2">
+                           <Store className="w-4 h-4" /> {selectedAnalysis.competitorName || 'Concorrente não informado'}
+                           {selectedAnalysis.listingUrl && (
+                             <a href={selectedAnalysis.listingUrl} target="_blank" rel="noreferrer" className="text-indigo-500 hover:underline flex items-center gap-1 ml-2 text-xs">
+                                Ver Anúncio <ExternalLink className="w-3 h-3" />
+                             </a>
+                           )}
+                         </p>
+                      </div>
+                      {renderOpportunityBadge(selectedAnalysis.opportunityScore)}
+                   </div>
+
+                   {/* Cards de Inteligencia */}
+                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      <Card className="rounded-3xl border-border shadow-sm">
+                         <CardContent className="p-5 text-center">
+                            <div className="text-[10px] font-black uppercase text-muted-foreground tracking-wider mb-2">Preço de Venda</div>
+                            <div className="font-black text-2xl text-emerald-600">{formatMoney(selectedAnalysis.salePrice)}</div>
+                         </CardContent>
+                      </Card>
+                      <Card className="rounded-3xl border-border shadow-sm">
+                         <CardContent className="p-5 text-center">
+                            <div className="text-[10px] font-black uppercase text-muted-foreground tracking-wider mb-2">Lucro Unid. Estimado</div>
+                            <div className="font-black text-2xl text-indigo-600">{formatMoney(selectedAnalysis.estimatedProfit)}</div>
+                         </CardContent>
+                      </Card>
+                      <Card className="rounded-3xl border-border shadow-sm">
+                         <CardContent className="p-5 text-center">
+                            <div className="text-[10px] font-black uppercase text-muted-foreground tracking-wider mb-2">Margem %</div>
+                            <div className={cn("font-black text-2xl", selectedAnalysis.estimatedMarginPercent > 20 ? "text-emerald-500" : "text-amber-500")}>
+                               {selectedAnalysis.estimatedMarginPercent?.toFixed(1) || 0}%
+                            </div>
+                         </CardContent>
+                      </Card>
+                      <Card className="rounded-3xl border-border shadow-sm">
+                         <CardContent className="p-5 text-center">
+                            <div className="text-[10px] font-black uppercase text-muted-foreground tracking-wider mb-2">Vendas</div>
+                            <div className="font-black text-2xl text-foreground">{selectedAnalysis.salesCount || 0}</div>
+                         </CardContent>
+                      </Card>
+                   </div>
+
+                   <Card className="rounded-3xl border-indigo-200 bg-indigo-50/50 dark:bg-indigo-950/20 shadow-sm overflow-hidden">
+                      <div className="p-5 flex items-start gap-4">
+                        <div className="p-3 bg-indigo-100 dark:bg-indigo-900 rounded-2xl text-indigo-600 dark:text-indigo-400">
+                           <TrendingUp className="w-6 h-6" />
+                        </div>
+                        <div>
+                           <h4 className="font-black text-sm uppercase tracking-wider text-indigo-800 dark:text-indigo-300">Diagnóstico do Sistema</h4>
+                           <p className="text-indigo-900 dark:text-indigo-100 font-medium mt-1 leading-relaxed">
+                              {selectedAnalysis.recommendation}
+                           </p>
+                        </div>
+                      </div>
+                   </Card>
+
+                   <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                     <div className="space-y-4">
+                        <h4 className="font-black text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-2"><DollarSign className="w-4 h-4" /> Detalhamento de Custo</h4>
+                        <div className="border border-border shadow-sm p-5 rounded-3xl space-y-3 font-medium text-sm">
+                           <div className="flex justify-between"><span className="text-muted-foreground">Produto</span><span>{formatMoney(selectedAnalysis.estimatedProductCost||0)}</span></div>
+                           <div className="flex justify-between"><span className="text-muted-foreground">Frete</span><span>{formatMoney(selectedAnalysis.estimatedShippingCost||0)}</span></div>
+                           <div className="flex justify-between"><span className="text-muted-foreground">Taxas (Mkt)</span><span>{formatMoney(selectedAnalysis.platformFee||0)}</span></div>
+                           <div className="flex justify-between"><span className="text-muted-foreground">Impostos</span><span>{formatMoney(selectedAnalysis.taxCost||0)}</span></div>
+                           <div className="flex justify-between"><span className="text-muted-foreground">Embalagem</span><span>{formatMoney(selectedAnalysis.packagingCost||0)}</span></div>
+                           <div className="flex justify-between"><span className="text-muted-foreground">ADS</span><span>{formatMoney(selectedAnalysis.estimatedAdsCost||0)}</span></div>
+                           <div className="pt-3 border-t border-border flex justify-between font-black"><span className="text-foreground">Custo Total (Ponto de Equilíbrio)</span><span className="text-red-500">{formatMoney(selectedAnalysis.breakEvenPrice||0)}</span></div>
+                        </div>
+                     </div>
+                     
+                     <div className="space-y-4">
+                        <h4 className="font-black text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-2"><AlertCircle className="w-4 h-4" /> Riscos e Produção</h4>
+                        <div className="border border-border shadow-sm p-5 rounded-3xl space-y-4 font-medium text-sm">
+                           <div className="flex justify-between"><span className="text-muted-foreground">Concorrência</span><span className="capitalize font-bold">{selectedAnalysis.competitionLevel.replace('_', ' ')}</span></div>
+                           <div className="flex justify-between"><span className="text-muted-foreground">Dif. Fabricação/Compra</span><span className="capitalize font-bold">{selectedAnalysis.productionDifficulty}</span></div>
+                           <div className="flex justify-between"><span className="text-muted-foreground">Risco Devolução</span><span className="capitalize font-bold">{selectedAnalysis.returnRisk}</span></div>
+                           <div className="flex justify-between"><span className="text-muted-foreground">Sazonalidade</span><span className="capitalize font-bold">{selectedAnalysis.seasonality.replace('_', ' ')}</span></div>
+                           <div className="flex justify-between pt-1"><span className="text-muted-foreground">Tempo do Anúncio</span><span className="font-bold">{selectedAnalysis.listingAgeDays ? `${selectedAnalysis.listingAgeDays} dias` : 'N/A'}</span></div>
+                        </div>
+                     </div>
+                   </div>
+
+                   {selectedAnalysis.initialNotes && (
+                      <div className="space-y-2">
+                        <h4 className="font-black text-xs uppercase tracking-wider text-muted-foreground">Observações</h4>
+                        <div className="p-5 border border-border rounded-3xl text-sm font-medium text-foreground/80 whitespace-pre-wrap leading-relaxed shadow-sm">
+                           {selectedAnalysis.initialNotes}
+                        </div>
+                      </div>
+                   )}
+                </div>
+              </>
+           )}
+        </DialogContent>
+      </Dialog>
+      
+    </div>
+  );
+}
+
+// Add Store icon (lucide doesn't export it by default in all versions alongside some others, using a safe replacement or bringing it)
+import { Store } from 'lucide-react';
