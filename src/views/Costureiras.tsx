@@ -10,6 +10,7 @@ import {
   deleteDoc,
   updateDoc,
   serverTimestamp,
+  onSnapshot,
 } from "firebase/firestore";
 import { useAuth } from "../contexts/AuthContext";
 import {
@@ -32,6 +33,7 @@ import {
   ArrowUpDown,
   MoreVertical,
   Users,
+  CheckCircle2,
 } from "lucide-react";
 import {
   Dialog,
@@ -59,6 +61,7 @@ import { motion, AnimatePresence } from "motion/react";
 export default function Costureiras() {
   const { user } = useAuth();
   const [costureiras, setCostureiras] = useState<any[]>([]);
+  const [producoes, setProducoes] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -75,28 +78,76 @@ export default function Costureiras() {
     observacoes: "",
     status: "ativo",
   });
-  const fetchCostureiras = async () => {
-    if (!user) return;
-    try {
-      const q = query(
-        collection(db, "prod_costureiras"),
-        where("userId", "==", user.uid),
-      );
-      const querySnapshot = await getDocs(q);
-      const data = querySnapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
-      setCostureiras(data);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.LIST, "prod_costureiras");
-    } finally {
-      setLoading(false);
-    }
-  };
+
   useEffect(() => {
-    fetchCostureiras();
+    if (!user) return;
+    const unsubCost = onSnapshot(
+      query(collection(db, "prod_costureiras"), where("userId", "==", user.uid)),
+      (snap) => {
+        setCostureiras(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        setLoading(false);
+      },
+      (error) => handleFirestoreError(error, OperationType.LIST, "prod_costureiras")
+    );
+
+    const unsubProd = onSnapshot(
+      query(collection(db, "prod_producoes"), where("userId", "==", user.uid)),
+      (snap) => {
+        setProducoes(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      },
+      (error) => handleFirestoreError(error, OperationType.LIST, "prod_producoes")
+    );
+
+    return () => {
+      unsubCost();
+      unsubProd();
+    };
   }, [user]);
+
+  const seamstressStats = useMemo(() => {
+    const map: Record<string, { lotesAtivos: number; pecasEntregues: number; pecasPendentes: number; totalPago: number; saldoPagar: number }> = {};
+    costureiras.forEach((c) => {
+      const prods = producoes.filter((p) => p.costureiraId === c.id || p.costureiraNome === c.nome);
+      const lotesAtivos = prods.filter((p) => p.statusProducao !== "Finalizado").length;
+      const pecasEntregues = prods.reduce(
+        (acc, p) => acc + (Number(p.totalEntregue) || (p.recebimentos ? p.recebimentos.reduce((s: number, r: any) => s + (Number(r.quantidade) || 0), 0) : 0)),
+        0,
+      );
+      const pecasPendentes = prods.reduce(
+        (acc, p) => acc + (p.totalPendente !== undefined ? Number(p.totalPendente) : Math.max(0, (Number(p.quantidadeTotal) || 0) - (Number(p.totalEntregue) || 0))),
+        0,
+      );
+      const totalPago = prods.reduce(
+        (acc, p) => acc + (Number(p.totalPagoCostura) || (p.pagamentos ? p.pagamentos.filter((pg: any) => !pg.categoria || pg.categoria === "Costura").reduce((s: number, pg: any) => s + (Number(pg.valor) || 0), 0) : 0)),
+        0,
+      );
+      const saldoPagar = prods.reduce((acc, p) => {
+        const custoCostura = (Number(p.valorCostura) || 0) * (Number(p.quantidadeTotal) || 0);
+        const pago = Number(p.totalPagoCostura) || 0;
+        return acc + Math.max(0, custoCostura - pago);
+      }, 0);
+
+      map[c.id] = { lotesAtivos, pecasEntregues, pecasPendentes, totalPago, saldoPagar };
+    });
+    return map;
+  }, [costureiras, producoes]);
+
+  const globalStats = useMemo(() => {
+    let totalLotes = 0;
+    let totalEntregues = 0;
+    let totalSaldo = 0;
+    Object.values(seamstressStats).forEach((s) => {
+      totalLotes += s.lotesAtivos;
+      totalEntregues += s.pecasEntregues;
+      totalSaldo += s.saldoPagar;
+    });
+    return { totalLotes, totalEntregues, totalSaldo };
+  }, [seamstressStats]);
+
+  const fetchCostureiras = () => {
+    // Handled automatically via onSnapshot
+  };
+
   const handleSave = async () => {
     if (!user) return;
     if (!formData.nome || !formData.telefone) {
@@ -227,7 +278,42 @@ export default function Costureiras() {
           <Plus size={18} className="mr-2" strokeWidth={3} /> Nova
           Costureira{" "}
         </Button>{" "}
-      </div>{" "}
+      </div>
+
+      {/* KPI CARDS DA EQUIPE DE COSTURA */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="premium-card p-5 flex flex-col justify-between">
+          <div className="flex items-center gap-2 mb-2 text-muted-foreground">
+            <Users size={16} className="text-primary" />
+            <span className="text-xs font-bold uppercase tracking-wider">Profissionais</span>
+          </div>
+          <div className="text-[28px] font-bold text-foreground">{costureiras.length}</div>
+        </div>
+        <div className="premium-card p-5 flex flex-col justify-between">
+          <div className="flex items-center gap-2 mb-2 text-muted-foreground">
+            <Scissors size={16} className="text-primary" />
+            <span className="text-xs font-bold uppercase tracking-wider">Lotes em Andamento</span>
+          </div>
+          <div className="text-[28px] font-bold text-foreground">{globalStats.totalLotes}</div>
+        </div>
+        <div className="premium-card p-5 flex flex-col justify-between">
+          <div className="flex items-center gap-2 mb-2 text-success">
+            <CheckCircle2 size={16} className="text-primary" />
+            <span className="text-xs font-bold uppercase tracking-wider">Total Peças Entregues</span>
+          </div>
+          <div className="text-[28px] font-bold text-foreground">{globalStats.totalEntregues.toLocaleString("pt-BR")} un</div>
+        </div>
+        <div className="premium-card p-5 flex flex-col justify-between">
+          <div className="flex items-center gap-2 mb-2 text-muted-foreground">
+            <Scissors size={16} className="text-primary" />
+            <span className="text-xs font-bold uppercase tracking-wider">Saldo a Pagar</span>
+          </div>
+          <div className="text-[24px] font-bold text-foreground">
+            {globalStats.totalSaldo.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
+          </div>
+        </div>
+      </div>
+
       <Card className="glass-card rounded-[24px] border border-border/50 shadow-sm overflow-hidden flex flex-col">
         {" "}
         <CardHeader className="bg-muted pb-4 pt-6 px-6 border-b border-border/50 shrink-0">
@@ -288,7 +374,6 @@ export default function Costureiras() {
                     className="px-6 py-4 cursor-pointer hover:bg-background/50 transition-colors"
                     onClick={() => handleSort("nome")}
                   >
-                    
                     <div className="flex items-center gap-2">
                       Nome <ArrowUpDown size={12} />
                     </div>
@@ -297,18 +382,18 @@ export default function Costureiras() {
                     className="px-6 py-4 cursor-pointer hover:bg-background/50 transition-colors"
                     onClick={() => handleSort("especialidade")}
                   >
-                    
                     <div className="flex items-center gap-2">
                       Especialidade <ArrowUpDown size={12} />
                     </div>
                   </th>
-<th className="px-6 py-4">Localização</th>
 <th className="px-6 py-4">Telefone</th>
+<th className="px-6 py-4 text-center">Lotes Ativos</th>
+<th className="px-6 py-4 text-right">Peças Entregues</th>
+<th className="px-6 py-4 text-right">Saldo a Pagar</th>
 <th
                     className="px-6 py-4 text-center cursor-pointer hover:bg-background/50 transition-colors"
                     onClick={() => handleSort("status")}
                   >
-                    
                     <div className="flex items-center justify-center gap-2">
                       Status <ArrowUpDown size={12} />
                     </div>
@@ -317,10 +402,10 @@ export default function Costureiras() {
 </tr>
 </thead>
 <tbody className="divide-y divide-border/50">
-                
                 <AnimatePresence>
-                  
-                  {filteredAndSortedCostureiras.map((c) => (
+                  {filteredAndSortedCostureiras.map((c) => {
+                    const st = seamstressStats[c.id] || { lotesAtivos: 0, pecasEntregues: 0, pecasPendentes: 0, totalPago: 0, saldoPagar: 0 };
+                    return (
                     <motion.tr
                       key={c.id}
                       initial={{ opacity: 0 }}
@@ -330,11 +415,8 @@ export default function Costureiras() {
                       onClick={() => openEdit(c)}
                     >
 <td className="px-6 py-4">
-                        
                         <div className="flex items-center gap-3">
-                          
                           <div className="w-10 h-10 rounded-xl bg-primary/10 text-primary font-black text-lg flex items-center justify-center shrink-0">
-                            
                             {c.nome.charAt(0).toUpperCase()}
                           </div>
                           <span className="font-bold text-foreground">
@@ -343,9 +425,7 @@ export default function Costureiras() {
                         </div>
                       </td>
 <td className="px-6 py-4">
-                        
                         <div className="flex items-center gap-2 text-muted-foreground font-semibold">
-                          
                           <Scissors
                             size={14}
                             className="text-muted-foreground/70"
@@ -354,25 +434,7 @@ export default function Costureiras() {
                         </div>
                       </td>
 <td className="px-6 py-4">
-                        
-                        <div className="flex items-center gap-2 text-muted-foreground font-medium">
-                          
-                          <MapPin
-                            size={14}
-                            className="text-muted-foreground/70"
-                          />
-                          <span
-                            className="truncate max-w-[200px]"
-                            title={c.endereco}
-                          >
-                            {c.endereco || "-"}
-                          </span>
-                        </div>
-                      </td>
-<td className="px-6 py-4">
-                        
                         <div className="flex items-center gap-2 font-mono text-xs font-bold text-muted-foreground">
-                          
                           <Phone
                             size={14}
                             className="text-muted-foreground/70"
@@ -381,11 +443,20 @@ export default function Costureiras() {
                         </div>
                       </td>
 <td className="px-6 py-4 text-center">
-                        
+                        <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${st.lotesAtivos > 0 ? "bg-primary/10 text-primary border border-primary/20" : "text-muted-foreground"}`}>
+                          {st.lotesAtivos} {st.lotesAtivos === 1 ? "lote" : "lotes"}
+                        </span>
+                      </td>
+<td className="px-6 py-4 text-right font-black text-foreground">
+                        {st.pecasEntregues.toLocaleString("pt-BR")} un
+                      </td>
+<td className="px-6 py-4 text-right font-bold text-primary">
+                        {st.saldoPagar > 0 ? st.saldoPagar.toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) : "R$ 0,00"}
+                      </td>
+<td className="px-6 py-4 text-center">
                         <span
                           className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider inline-flex ${c.status === "ativo" ? "bg-success/10 text-success dark:bg-green-900/30 dark:text-green-400" : "bg-muted text-muted-foreground border border-border/50"}`}
                         >
-                          
                           {c.status === "ativo" ? "Ativa" : "Inativa"}
                         </span>
                       </td>
@@ -432,8 +503,9 @@ export default function Costureiras() {
                           </DropdownMenuContent>
                         </DropdownMenu>
                       </td>
-</motion.tr>
-                  ))}
+                    </motion.tr>
+                    );
+                  })}
                 </AnimatePresence>
               </tbody>
 </table>

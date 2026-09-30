@@ -11,7 +11,10 @@ import {
   updateDoc,
   serverTimestamp,
   orderBy,
+  onSnapshot,
+  addDoc,
 } from "firebase/firestore";
+import { StockMovement } from "../lib/erpUtils";
 import { useAuth } from "../contexts/AuthContext";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -95,6 +98,18 @@ import {
 export default function Insumos() {
   const { user } = useAuth();
   const [compras, setCompras] = useState<any[]>([]);
+  const [movimentacoes, setMovimentacoes] = useState<StockMovement[]>([]);
+  const [activeInsumoTab, setActiveInsumoTab] = useState<"compras" | "estoque">("compras");
+  const [isMovModalOpen, setIsMovModalOpen] = useState(false);
+  const [movFormData, setMovFormData] = useState({
+    tipo: "ENTRADA" as "ENTRADA" | "SAIDA" | "AJUSTE" | "PERDA" | "DEVOLUCAO",
+    descricao: "",
+    quantidade: "1",
+    unidade: "un",
+    motivo: "",
+    origem: "",
+    data: new Date().toISOString().split("T")[0],
+  });
   const [loading, setLoading] = useState(true);
   /*  Table Filters */ const [search, setSearch] = useState("");
   const [sortField, setSortField] = useState("dataCompra");
@@ -131,29 +146,61 @@ export default function Insumos() {
     const forns = new Set(compras.map((c) => c.fornecedor || "Sem Fornecedor"));
     return ["Todos", ...Array.from(forns)];
   }, [compras]);
-  const fetchCompras = async () => {
-    if (!user) return;
-    try {
-      const q = query(
-        collection(db, "prod_compras"),
-        where("userId", "==", user.uid),
-        orderBy("createdAt", "desc"),
-      );
-      const querySnapshot = await getDocs(q);
-      const data = querySnapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
-      setCompras(data);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.LIST, "prod_compras");
-    } finally {
-      setLoading(false);
-    }
-  };
+
   useEffect(() => {
-    fetchCompras();
+    if (!user) return;
+    const unsubCompras = onSnapshot(
+      query(collection(db, "prod_compras"), where("userId", "==", user.uid)),
+      (snapshot) => {
+        const data = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+        setCompras(data);
+        setLoading(false);
+      },
+      (error) => handleFirestoreError(error, OperationType.LIST, "prod_compras")
+    );
+
+    const unsubMovs = onSnapshot(
+      query(collection(db, "prod_insumos_movimentacoes"), where("userId", "==", user.uid)),
+      (snapshot) => {
+        const data = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        })) as StockMovement[];
+        data.sort((a, b) => new Date(b.data || b.createdAt).getTime() - new Date(a.data || a.createdAt).getTime());
+        setMovimentacoes(data);
+      },
+      (error) => handleFirestoreError(error, OperationType.LIST, "prod_insumos_movimentacoes")
+    );
+
+    return () => {
+      unsubCompras();
+      unsubMovs();
+    };
   }, [user]);
+
+  const stockByItem = useMemo(() => {
+    const map: Record<string, { descricao: string; unidade: string; saldo: number; entradas: number; saidas: number }> = {};
+    movimentacoes.forEach((m) => {
+      const key = (m.descricao || "Item").trim().toLowerCase();
+      if (!map[key]) {
+        map[key] = { descricao: m.descricao, unidade: m.unidade || "un", saldo: 0, entradas: 0, saidas: 0 };
+      }
+      const qtd = Number(m.quantidade) || 0;
+      if (m.tipo === "ENTRADA" || m.tipo === "DEVOLUCAO") {
+        map[key].saldo += qtd;
+        map[key].entradas += qtd;
+      } else if (m.tipo === "SAIDA" || m.tipo === "PERDA") {
+        map[key].saldo -= qtd;
+        map[key].saidas += qtd;
+      } else if (m.tipo === "AJUSTE") {
+        map[key].saldo += qtd;
+      }
+    });
+    return Object.values(map);
+  }, [movimentacoes]);
   const generateParcelas = (
     valor: number,
     qtde: number,
@@ -249,10 +296,98 @@ export default function Insumos() {
           id: newId,
           ...compraData,
         });
-        toast.success("Compra de insumo registrada!");
+
+        // 1. Automatic Stock Movement: ENTRADA from purchase
+        try {
+          await addDoc(collection(db, "prod_insumos_movimentacoes"), {
+            userId: user.uid,
+            tipo: "ENTRADA",
+            descricao: formData.descricao,
+            quantidade: parseFloat(formData.quantidade) || 1,
+            unidade: formData.unidade || "un",
+            motivo: `Compra de insumo: ${formData.descricao}`,
+            origem: formData.fornecedor || "Fornecedor",
+            referenciaId: newId,
+            data: formData.dataCompra,
+            createdAt: serverTimestamp(),
+          });
+        } catch (errMov) {
+          console.warn("Aviso ao registrar movimentação de estoque:", errMov);
+        }
+
+        // 2. Integration with Financeiro (Contas a Pagar)
+        try {
+          const isPrazo = formData.tipoPagamento === "a_prazo";
+          const numParcelas = isPrazo ? parseInt(formData.quantidadeParcelas) || 1 : 1;
+          const payDocRef = await addDoc(collection(db, "prod_accounts_payable"), {
+            userId: user.uid,
+            description: `Insumo: ${formData.descricao}`,
+            launchType: "insumo",
+            compraId: newId,
+            category: formData.categoria || "Insumos",
+            supplier: formData.fornecedor || "Fornecedor",
+            type: "empresa",
+            totalValue: valor,
+            purchaseDate: formData.dataCompra,
+            paymentMethod: formData.formaPagamento,
+            isInstallment: isPrazo,
+            installmentCount: numParcelas,
+            firstDueDate: isPrazo && formData.parcelas?.[0]?.dataVencimento ? formData.parcelas[0].dataVencimento : formData.dataCompra,
+            status: formData.statusPagamento || (isPrazo ? "pendente" : "pago"),
+            paidValue: formData.statusPagamento === "pago" ? valor : 0,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+
+          if (isPrazo && formData.parcelas && formData.parcelas.length > 0) {
+            for (const parc of formData.parcelas) {
+              await addDoc(collection(db, `prod_accounts_payable/${payDocRef.id}/installments`), {
+                userId: user.uid,
+                accountId: payDocRef.id,
+                type: "empresa",
+                installmentNumber: parc.numero,
+                totalInstallments: numParcelas,
+                description: `${formData.descricao} (Parc. ${parc.numero}/${numParcelas})`,
+                supplier: formData.fornecedor || "Fornecedor",
+                category: formData.categoria || "Insumos",
+                value: Number(parc.valor),
+                dueDate: parc.dataVencimento,
+                paidValue: parc.status === "pago" ? Number(parc.valor) : null,
+                remainingValue: parc.status === "pago" ? 0 : Number(parc.valor),
+                status: parc.status === "pago" ? "pago" : "pendente",
+                paymentMethod: formData.formaPagamento,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+            }
+          } else {
+            await addDoc(collection(db, `prod_accounts_payable/${payDocRef.id}/installments`), {
+              userId: user.uid,
+              accountId: payDocRef.id,
+              type: "empresa",
+              installmentNumber: 1,
+              totalInstallments: 1,
+              description: `Insumo: ${formData.descricao}`,
+              supplier: formData.fornecedor || "Fornecedor",
+              category: formData.categoria || "Insumos",
+              value: valor,
+              dueDate: formData.dataCompra,
+              paymentDate: formData.statusPagamento === "pago" ? formData.dataCompra : null,
+              paidValue: formData.statusPagamento === "pago" ? valor : null,
+              remainingValue: formData.statusPagamento === "pago" ? 0 : valor,
+              status: formData.statusPagamento === "pago" ? "pago" : "pendente",
+              paymentMethod: formData.formaPagamento,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          }
+        } catch (errSync) {
+          console.warn("Aviso ao sincronizar compra com financeiro:", errSync);
+        }
+
+        toast.success("Compra de insumo registrada, estoque abastecido e financeiro sincronizado!");
       }
       setIsDialogOpen(false);
-      fetchCompras();
     } catch (error) {
       handleFirestoreError(
         error,
@@ -261,6 +396,46 @@ export default function Insumos() {
       );
     }
   };
+
+  const handleSaveMovimentacao = async () => {
+    if (!user) return;
+    if (!movFormData.descricao || !movFormData.quantidade) {
+      toast.error("Preencha item e quantidade.");
+      return;
+    }
+    try {
+      await addDoc(collection(db, "prod_insumos_movimentacoes"), {
+        userId: user.uid,
+        tipo: movFormData.tipo,
+        descricao: movFormData.descricao,
+        quantidade: parseFloat(movFormData.quantidade) || 0,
+        unidade: movFormData.unidade || "un",
+        motivo: movFormData.motivo || "",
+        origem: movFormData.origem || "",
+        data: movFormData.data,
+        createdAt: serverTimestamp(),
+      });
+      toast.success("Movimentação de estoque registrada com sucesso!");
+      setIsMovModalOpen(false);
+      setMovFormData({
+        tipo: "ENTRADA",
+        descricao: "",
+        quantidade: "1",
+        unidade: "un",
+        motivo: "",
+        origem: "",
+        data: new Date().toISOString().split("T")[0],
+      });
+    } catch (err) {
+      console.error(err);
+      toast.error("Erro ao registrar movimentação.");
+    }
+  };
+
+  const fetchCompras = () => {
+    // Handled automatically via onSnapshot
+  };
+
   const handleDelete = async () => {
     if (!deleteConfirmId) return;
     try {
@@ -429,14 +604,26 @@ export default function Insumos() {
   const maiorCompra = maiorCompraObj?.valorTotal || 0;
   const maiorCompraFornecedor = maiorCompraObj?.fornecedor || "-";
   const ticketMedio = compras.length ? totalInvestido / compras.length : 0;
-  /* Mock data for charts */ const monthlyData = [
-    { name: "Jan", value: 1200 },
-    { name: "Fev", value: 1900 },
-    { name: "Mar", value: 800 },
-    { name: "Abr", value: 2400 },
-    { name: "Mai", value: 1500 },
-    { name: "Jun", value: totalInvestido },
-  ];
+  const monthlyData = useMemo(() => {
+    const months = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+    const curYear = new Date().getFullYear();
+    const curMonth = new Date().getMonth();
+    const last6 = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(curYear, curMonth - i, 1);
+      const mIdx = d.getMonth();
+      const y = d.getFullYear();
+      const totalMonth = compras
+        .filter((c) => {
+          if (!c.dataCompra) return false;
+          const cDate = new Date(c.dataCompra + "T00:00:00");
+          return cDate.getMonth() === mIdx && cDate.getFullYear() === y;
+        })
+        .reduce((sum, c) => sum + (Number(c.valorTotal) || 0), 0);
+      last6.push({ name: months[mIdx], value: totalMonth });
+    }
+    return last6;
+  }, [compras]);
   const categoryData = categoriasDisponiveis
     .filter((c) => c !== "Todas")
     .map((cat, i) => ({
@@ -463,16 +650,48 @@ export default function Insumos() {
             Gerencie todas as compras da confecção.
           </p>{" "}
         </div>{" "}
-        <Button
-          onClick={() => {
-            resetForm();
-            setIsDialogOpen(true);
-          }}
-          className="bg-primary hover:bg-primary/90 text-white shadow-lg shadow-primary/20 hover:shadow-xl hover:shadow-primary/30 active:scale-95 transition-all outline-none rounded-[18px] px-6 h-12 font-bold border-none shrink-0"
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            onClick={() => setIsMovModalOpen(true)}
+            variant="outline"
+            className="rounded-[18px] px-5 h-12 font-bold border-border hover:bg-muted"
+          >
+            <ArrowUpDown size={18} className="mr-2 text-primary" strokeWidth={2.5} /> Movimentar Estoque
+          </Button>
+          <Button
+            onClick={() => {
+              resetForm();
+              setIsDialogOpen(true);
+            }}
+            className="bg-primary hover:bg-primary/90 text-white shadow-lg shadow-primary/20 hover:shadow-xl hover:shadow-primary/30 active:scale-95 transition-all outline-none rounded-[18px] px-6 h-12 font-bold border-none shrink-0"
+          >
+            <Plus size={18} className="mr-2" strokeWidth={3} /> Nova Compra
+          </Button>
+        </div>
+      </div>
+
+      {/* TABS NAVEGAÇÃO DEPARTAMENTAL */}
+      <div className="flex items-center gap-2 border-b border-border/40 pb-2">
+        <button
+          onClick={() => setActiveInsumoTab("compras")}
+          className={`px-5 py-2.5 rounded-xl font-bold text-sm transition-all ${
+            activeInsumoTab === "compras"
+              ? "bg-primary text-white shadow-md shadow-primary/20"
+              : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+          }`}
         >
-          {" "}
-          <Plus size={18} className="mr-2" strokeWidth={3} /> Nova Compra{" "}
-        </Button>{" "}
+          Compras de Insumos ({compras.length})
+        </button>
+        <button
+          onClick={() => setActiveInsumoTab("estoque")}
+          className={`px-5 py-2.5 rounded-xl font-bold text-sm transition-all ${
+            activeInsumoTab === "estoque"
+              ? "bg-primary text-white shadow-md shadow-primary/20"
+              : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+          }`}
+        >
+          Gestão de Estoque & Movimentações ({movimentacoes.length})
+        </button>
       </div>{" "}
       {/* CARDS EXECUTIVOS */}{" "}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
@@ -555,7 +774,8 @@ export default function Insumos() {
           </div>{" "}
         </motion.div>{" "}
       </div>{" "}
-      {/* MAIN CONTENT AREA - NO SIDEBAR, FULL WIDTH TABLE */}{" "}
+      {/* MAIN CONTENT AREA - NO SIDEBAR, FULL WIDTH TABLE */}
+      {activeInsumoTab === "compras" ? (
       <div className="space-y-6">
         {" "}
         {/* FILTROS MODERNOS PILLS */}{" "}
@@ -871,7 +1091,165 @@ export default function Insumos() {
             </div>{" "}
           </div>
         )}{" "}
-      </div>{" "}
+      </div>
+      ) : (
+        <div className="space-y-6">
+          {/* CARDS RESUMO DO ESTOQUE */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="premium-card p-5 flex flex-col justify-between">
+              <div className="flex items-center gap-2 mb-2 text-muted-foreground">
+                <ShoppingBag size={16} className="text-primary" />
+                <span className="text-xs font-bold uppercase tracking-wider">Itens Controlados</span>
+              </div>
+              <div className="text-[28px] font-bold text-foreground">{stockByItem.length}</div>
+            </div>
+            <div className="premium-card p-5 flex flex-col justify-between">
+              <div className="flex items-center gap-2 mb-2 text-muted-foreground">
+                <ArrowUpDown size={16} className="text-primary" />
+                <span className="text-xs font-bold uppercase tracking-wider">Total Movimentações</span>
+              </div>
+              <div className="text-[28px] font-bold text-foreground">{movimentacoes.length}</div>
+            </div>
+            <div className="premium-card p-5 flex flex-col justify-between">
+              <div className="flex items-center gap-2 mb-2 text-success">
+                <CheckCircle size={16} className="text-primary" />
+                <span className="text-xs font-bold uppercase tracking-wider">Entradas Registradas</span>
+              </div>
+              <div className="text-[28px] font-bold text-foreground">
+                {movimentacoes.filter((m) => m.tipo === "ENTRADA" || m.tipo === "DEVOLUCAO").length}
+              </div>
+            </div>
+            <div className="premium-card p-5 flex flex-col justify-between">
+              <div className="flex items-center gap-2 mb-2 text-muted-foreground">
+                <Clock size={16} className="text-primary" />
+                <span className="text-xs font-bold uppercase tracking-wider">Saídas / Consumo</span>
+              </div>
+              <div className="text-[28px] font-bold text-foreground">
+                {movimentacoes.filter((m) => m.tipo === "SAIDA" || m.tipo === "PERDA").length}
+              </div>
+            </div>
+          </div>
+
+          {/* TABELA DE SALDO ATUAL POR INSUMO */}
+          <div className="premium-card p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-bold text-foreground">Saldo Atual por Insumo</h3>
+                <p className="text-xs text-muted-foreground">Calculado estritamente pelas movimentações de estoque (Kardex).</p>
+              </div>
+              <Button
+                onClick={() => setIsMovModalOpen(true)}
+                className="rounded-xl h-10 px-4 font-bold bg-primary text-white"
+              >
+                <Plus size={16} className="mr-1.5" /> Registrar Ajuste / Consumo
+              </Button>
+            </div>
+
+            {stockByItem.length === 0 ? (
+              <div className="py-12 text-center text-muted-foreground text-sm font-medium">
+                Nenhum saldo ou movimentação de insumo registrada ainda.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm text-left">
+                  <thead className="bg-muted text-muted-foreground font-bold text-[11px] uppercase tracking-wider">
+                    <tr>
+                      <th className="px-6 py-4">Insumo / Material</th>
+                      <th className="px-6 py-4">Unidade</th>
+                      <th className="px-6 py-4 text-right">Total Entradas</th>
+                      <th className="px-6 py-4 text-right">Total Saídas</th>
+                      <th className="px-6 py-4 text-right">Saldo em Estoque</th>
+                      <th className="px-6 py-4 text-center">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/50 font-medium">
+                    {stockByItem.map((item, idx) => (
+                      <tr key={idx} className="hover:bg-muted/40 transition-colors">
+                        <td className="px-6 py-4 font-bold text-foreground capitalize">{item.descricao}</td>
+                        <td className="px-6 py-4 text-muted-foreground uppercase">{item.unidade}</td>
+                        <td className="px-6 py-4 text-right text-foreground font-semibold">{item.entradas.toLocaleString("pt-BR")}</td>
+                        <td className="px-6 py-4 text-right text-muted-foreground font-semibold">{item.saidas.toLocaleString("pt-BR")}</td>
+                        <td className="px-6 py-4 text-right font-black text-primary text-base">
+                          {item.saldo.toLocaleString("pt-BR")} {item.unidade}
+                        </td>
+                        <td className="px-6 py-4 text-center">
+                          <span
+                            className={`text-[10px] font-bold uppercase tracking-wider px-3 py-1 rounded-full ${
+                              item.saldo > 0
+                                ? "bg-primary/10 text-primary border border-primary/20"
+                                : "bg-destructive/10 text-destructive border border-destructive/20"
+                            }`}
+                          >
+                            {item.saldo > 0 ? "Em Estoque" : "Esgotado"}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* TABELA DE HISTÓRICO DE MOVIMENTAÇÕES */}
+          <div className="premium-card p-6 space-y-4">
+            <div>
+              <h3 className="text-lg font-bold text-foreground">Histórico de Movimentações (Kardex)</h3>
+              <p className="text-xs text-muted-foreground">Registro imutável de todas as entradas, saídas, perdas e ajustes.</p>
+            </div>
+
+            {movimentacoes.length === 0 ? (
+              <div className="py-12 text-center text-muted-foreground text-sm font-medium">
+                Nenhuma movimentação registrada no histórico.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm text-left">
+                  <thead className="bg-muted text-muted-foreground font-bold text-[11px] uppercase tracking-wider">
+                    <tr>
+                      <th className="px-6 py-4">Data</th>
+                      <th className="px-6 py-4">Tipo</th>
+                      <th className="px-6 py-4">Insumo</th>
+                      <th className="px-6 py-4 text-right">Quantidade</th>
+                      <th className="px-6 py-4">Origem / Destino</th>
+                      <th className="px-6 py-4">Motivo / Justificativa</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/50 font-medium text-xs">
+                    {movimentacoes.map((mov) => (
+                      <tr key={mov.id} className="hover:bg-muted/40 transition-colors">
+                        <td className="px-6 py-4 font-bold text-foreground">
+                          {mov.data ? new Date(mov.data + "T00:00:00").toLocaleDateString("pt-BR") : "-"}
+                        </td>
+                        <td className="px-6 py-4">
+                          <span
+                            className={`text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full border ${
+                              mov.tipo === "ENTRADA" || mov.tipo === "DEVOLUCAO"
+                                ? "bg-primary/10 text-primary border-primary/20"
+                                : mov.tipo === "AJUSTE"
+                                ? "bg-muted text-foreground border-border"
+                                : "bg-destructive/10 text-destructive border-destructive/20"
+                            }`}
+                          >
+                            {mov.tipo}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 font-bold text-foreground">{mov.descricao}</td>
+                        <td className="px-6 py-4 text-right font-black text-foreground">
+                          {mov.tipo === "SAIDA" || mov.tipo === "PERDA" ? "-" : "+"}
+                          {mov.quantidade} {mov.unidade}
+                        </td>
+                        <td className="px-6 py-4 text-muted-foreground">{mov.origem || "-"}</td>
+                        <td className="px-6 py-4 text-muted-foreground">{mov.motivo || "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       {/* NOVA COMPRA MODAL - REDESENHADO 50% */}{" "}
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
         {" "}
@@ -1549,6 +1927,139 @@ export default function Insumos() {
           </DialogFooter>{" "}
         </DialogContent>{" "}
       </Dialog>{" "}
+
+      {/* MODAL REGISTRAR MOVIMENTAÇÃO DE ESTOQUE */}
+      <Dialog open={isMovModalOpen} onOpenChange={setIsMovModalOpen}>
+        <DialogContent className="sm:max-w-[550px] rounded-[2rem] p-8 border-border bg-card shadow-2xl">
+          <DialogHeader className="pb-4 border-b border-border/50">
+            <DialogTitle className="text-2xl font-black text-foreground flex items-center gap-2">
+              <ArrowUpDown className="w-6 h-6 text-primary" />
+              Movimentação de Estoque
+            </DialogTitle>
+            <p className="text-sm text-muted-foreground mt-1">
+              Registre entradas, saídas, perdas ou ajustes com rastreabilidade total.
+            </p>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-1.5">
+              <Label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                Tipo de Movimentação *
+              </Label>
+              <Select
+                value={movFormData.tipo}
+                onValueChange={(v: any) => setMovFormData({ ...movFormData, tipo: v })}
+              >
+                <SelectTrigger className="h-12 rounded-xl font-bold">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="rounded-xl font-bold">
+                  <SelectItem value="ENTRADA">ENTRADA (Abastecimento / Compra)</SelectItem>
+                  <SelectItem value="SAIDA">SAÍDA (Consumo de Produção)</SelectItem>
+                  <SelectItem value="AJUSTE">AJUSTE (Inventário / Balanço)</SelectItem>
+                  <SelectItem value="PERDA">PERDA (Avaria / Descarte)</SelectItem>
+                  <SelectItem value="DEVOLUCAO">DEVOLUÇÃO (Retorno ao Estoque)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                Descrição do Insumo / Material *
+              </Label>
+              <Input
+                placeholder="Ex: Tecido Malha Canelada, Zíper 15cm"
+                value={movFormData.descricao}
+                onChange={(e) => setMovFormData({ ...movFormData, descricao: e.target.value })}
+                className="h-12 rounded-xl font-medium"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                  Quantidade *
+                </Label>
+                <Input
+                  type="number"
+                  step="any"
+                  placeholder="0"
+                  value={movFormData.quantidade}
+                  onChange={(e) => setMovFormData({ ...movFormData, quantidade: e.target.value })}
+                  className="h-12 rounded-xl font-bold text-primary"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                  Unidade
+                </Label>
+                <Select
+                  value={movFormData.unidade}
+                  onValueChange={(v) => setMovFormData({ ...movFormData, unidade: v })}
+                >
+                  <SelectTrigger className="h-12 rounded-xl font-bold">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="rounded-xl font-bold">
+                    <SelectItem value="m">Metros (m)</SelectItem>
+                    <SelectItem value="kg">Quilos (kg)</SelectItem>
+                    <SelectItem value="un">Unidades (un)</SelectItem>
+                    <SelectItem value="rl">Rolos (rl)</SelectItem>
+                    <SelectItem value="pct">Pacotes (pct)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                  Data da Movimentação
+                </Label>
+                <Input
+                  type="date"
+                  value={movFormData.data}
+                  onChange={(e) => setMovFormData({ ...movFormData, data: e.target.value })}
+                  className="h-12 rounded-xl font-medium"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                  Origem / Destino / Facção
+                </Label>
+                <Input
+                  placeholder="Ex: Corte, Facção Silva"
+                  value={movFormData.origem}
+                  onChange={(e) => setMovFormData({ ...movFormData, origem: e.target.value })}
+                  className="h-12 rounded-xl font-medium"
+                />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                Motivo / Justificativa
+              </Label>
+              <Input
+                placeholder="Ex: Consumo para Lote L4589"
+                value={movFormData.motivo}
+                onChange={(e) => setMovFormData({ ...movFormData, motivo: e.target.value })}
+                className="h-12 rounded-xl font-medium"
+              />
+            </div>
+          </div>
+          <DialogFooter className="pt-4 border-t border-border/50 gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setIsMovModalOpen(false)}
+              className="h-12 rounded-xl font-bold"
+            >
+              Cancelar
+            </Button>
+            <Button
+              onClick={handleSaveMovimentacao}
+              className="bg-primary hover:bg-primary/90 text-white h-12 rounded-xl font-bold px-6 shadow-md shadow-primary/20"
+            >
+              Salvar Movimentação
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

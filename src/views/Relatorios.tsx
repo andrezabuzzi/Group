@@ -47,7 +47,7 @@ import {
   SelectValue,
 } from "../components/ui/select";
 import { useAuth } from "../contexts/AuthContext";
-import { collection, query, getDocs, where } from "firebase/firestore";
+import { collection, query, getDocs, where, onSnapshot } from "firebase/firestore";
 import { db } from "../lib/firebase";
 import { toast } from "sonner";
 import { motion, AnimatePresence } from "motion/react";
@@ -67,43 +67,33 @@ export default function Relatorios() {
   const [filterProduto, setFilterProduto] = useState("Todos");
   const reportRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const fetchData = async () => {
-      if (!user) return;
-      try {
-        const prodQ = query(
-          collection(db, "prod_producoes"),
-          where("userId", "==", user.uid),
-        );
-        const produtosQ = query(
-          collection(db, "prod_produtos"),
-          where("userId", "==", user.uid),
-        );
-        const costQ = query(
-          collection(db, "prod_costureiras"),
-          where("userId", "==", user.uid),
-        );
-        const comprasQ = query(
-          collection(db, "prod_compras"),
-          where("userId", "==", user.uid),
-        );
-        const [prodSnap, produtosSnap, costSnap, comprasSnap] =
-          await Promise.all([
-            getDocs(prodQ),
-            getDocs(produtosQ),
-            getDocs(costQ),
-            getDocs(comprasQ),
-          ]);
-        setProducoes(prodSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
-        setProdutos(produtosSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
-        setCostureiras(costSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
-        setCompras(comprasSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      } catch (err) {
-        console.error(err);
-      } finally {
+    if (!user) return;
+    const unsubProd = onSnapshot(
+      query(collection(db, "prod_producoes"), where("userId", "==", user.uid)),
+      (snap) => {
+        setProducoes(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
         setLoading(false);
       }
+    );
+    const unsubProdut = onSnapshot(
+      query(collection(db, "prod_produtos"), where("userId", "==", user.uid)),
+      (snap) => setProdutos(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
+    );
+    const unsubCost = onSnapshot(
+      query(collection(db, "prod_costureiras"), where("userId", "==", user.uid)),
+      (snap) => setCostureiras(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
+    );
+    const unsubCompras = onSnapshot(
+      query(collection(db, "prod_compras"), where("userId", "==", user.uid)),
+      (snap) => setCompras(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
+    );
+
+    return () => {
+      unsubProd();
+      unsubProdut();
+      unsubCost();
+      unsubCompras();
     };
-    fetchData();
   }, [user]);
   const filteredProducoes = useMemo(() => {
     return producoes.filter((p) => {
@@ -202,8 +192,8 @@ export default function Relatorios() {
     filteredProducoes.forEach((p) => {
       const qtd = parseInt(p.quantidadeTotal) || 0;
       const custoReal = parseFloat(p.custoTotal) || 0;
-      const entregue = parseInt(p.totalEntregue) || 0;
-      const pendente = qtd - entregue;
+      const entregue = p.totalEntregue !== undefined ? Number(p.totalEntregue) : (p.recebimentos ? p.recebimentos.reduce((s: number, r: any) => s + (Number(r.quantidade) || 0), 0) : (p.statusProducao === "Finalizado" ? qtd : 0));
+      const pendente = p.totalPendente !== undefined ? Number(p.totalPendente) : Math.max(0, qtd - entregue);
       producaoTotal += qtd;
       pecasEntregues += entregue;
       pecasPendentes += pendente;

@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import { db } from "../lib/firebase";
 import { collection, query, where, onSnapshot } from "firebase/firestore";
+import { isProductionOverdue, formatLote, calcProducaoFinanceiro } from "../lib/erpUtils";
 import { useAuth } from "../contexts/AuthContext";
 import { useTheme } from "../components/ThemeProvider";
 import { motion } from "motion/react";
@@ -66,39 +67,88 @@ export default function DashboardConfeccao() {
     setTimeout(() => setLoading(false), 500);
     return () => unsubPromises.forEach((unsub) => unsub());
   }, [user]);
-  /*  Derived Data */ const totalLotes = producoes.length;
-  /*  Total peças cortadas vs Entregues */ const totalPecasCortadas =
-    producoes.reduce((acc, p) => acc + (Number(p.quantidadeTotal) || 0), 0);
-  const entregues = producoes.filter((p) => p.status === "Finalizado");
-  const totalPecasEntregues = entregues.reduce(
+  /* Derived Data */
+  const totalLotes = producoes.length;
+  const totalPecasCortadas = producoes.reduce(
     (acc, p) => acc + (Number(p.quantidadeTotal) || 0),
     0,
   );
-  const pecasEmProducao = totalPecasCortadas - totalPecasEntregues;
-  const pgtoPendente = producoes
-    .filter((p) => p.statusPgto !== "Pago")
-    .reduce((acc, p) => acc + (Number(p.valorTotal) || 0), 0);
-  const prodAtrasadas = producoes.filter(
-    (p) =>
-      p.status !== "Finalizado" &&
-      p.dataPrevisao &&
-      new Date(p.dataPrevisao) < new Date(),
-  );
-  /*  Ranking de costureiras */ const rankingCostureiras = costureiras
+  const totalPecasEntregues = producoes.reduce((acc, p) => {
+    if (p.totalEntregue !== undefined) return acc + (Number(p.totalEntregue) || 0);
+    const recs = p.recebimentos || [];
+    return acc + recs.reduce((sum: number, r: any) => sum + (Number(r.quantidade) || 0), 0);
+  }, 0);
+  const pecasEmProducao = producoes.reduce((acc, p) => {
+    if (p.totalPendente !== undefined) return acc + (Number(p.totalPendente) || 0);
+    const totalQtd = Number(p.quantidadeTotal) || 0;
+    const ent = p.totalEntregue !== undefined ? Number(p.totalEntregue) : 0;
+    return acc + Math.max(0, totalQtd - ent);
+  }, 0);
+  const pgtoPendente = producoes.reduce((acc, p) => {
+    const fin = calcProducaoFinanceiro(p);
+    return acc + fin.saldoPendenteLote;
+  }, 0);
+  const costuraPendente = producoes.reduce((acc, p) => {
+    const fin = calcProducaoFinanceiro(p);
+    return acc + fin.saldoCostura;
+  }, 0);
+  const prodAtrasadas = producoes.filter((p) => {
+    const pendente = p.totalPendente !== undefined ? Number(p.totalPendente) : Math.max(0, (Number(p.quantidadeTotal) || 0) - (Number(p.totalEntregue) || 0));
+    return p.statusProducao !== "Finalizado" && isProductionOverdue(p.dataPrevisao, pendente);
+  });
+
+  const taxaEficiencia = totalPecasCortadas > 0 ? (totalPecasEntregues / totalPecasCortadas) * 100 : 0;
+
+  /* Ranking de costureiras */
+  const rankingCostureiras = costureiras
     .map((c) => {
       const prodsDaCostureira = producoes.filter(
-        (p) => p.costureiraId === c.id,
+        (p) => p.costureiraId === c.id || p.costureiraNome === c.nome,
       );
-      const entreguesPorEla = prodsDaCostureira
-        .filter((p) => p.status === "Finalizado")
-        .reduce((acc, p) => acc + (Number(p.quantidadeTotal) || 0), 0);
-      const valorGanho = prodsDaCostureira
-        .filter((p) => p.status === "Finalizado")
-        .reduce((acc, p) => acc + (Number(p.valorTotal) || 0), 0);
+      const entreguesPorEla = prodsDaCostureira.reduce(
+        (acc, p) => acc + (Number(p.totalEntregue) || (p.recebimentos ? p.recebimentos.reduce((s: number, r: any) => s + (Number(r.quantidade) || 0), 0) : 0)),
+        0,
+      );
+      const valorGanho = prodsDaCostureira.reduce((acc, p) => {
+        if (p.totalPagoCostura !== undefined) return acc + Number(p.totalPagoCostura);
+        const pags = p.pagamentos || p.pagamentosCostura || [];
+        return acc + pags.filter((pg: any) => !pg.categoria || pg.categoria === "Costura").reduce((s: number, pg: any) => s + (Number(pg.valor) || 0), 0);
+      }, 0);
       return { ...c, entreguesPorEla, valorGanho };
     })
     .sort((a, b) => b.entreguesPorEla - a.entreguesPorEla)
     .slice(0, 5);
+
+  /* Weekly Evolution Data */
+  const weeklyProductionData = useMemo(() => {
+    const now = new Date();
+    const curYear = now.getFullYear();
+    const curMonth = now.getMonth();
+    return [1, 2, 3, 4, 5].map((wNum) => {
+      let previsto = 0;
+      let entregue = 0;
+      let pendente = 0;
+      producoes.forEach((p) => {
+        let pDate: Date | null = null;
+        if (p.dataPrevisao) {
+          try { pDate = parseISO(p.dataPrevisao); } catch { pDate = null; }
+        } else if (p.createdAt) {
+          pDate = new Date(p.createdAt?.toMillis ? p.createdAt.toMillis() : p.createdAt);
+        }
+        if (pDate && pDate.getFullYear() === curYear && pDate.getMonth() === curMonth) {
+          const day = pDate.getDate();
+          const batchWeek = Math.min(5, Math.ceil(day / 7));
+          if (batchWeek === wNum) {
+            previsto += Number(p.quantidadeTotal) || 0;
+            const pEntregue = Number(p.totalEntregue) || 0;
+            entregue += pEntregue;
+            pendente += p.totalPendente !== undefined ? Number(p.totalPendente) : Math.max(0, (Number(p.quantidadeTotal) || 0) - pEntregue);
+          }
+        }
+      });
+      return { name: `Semana ${wNum}`, previsto, entregue, pendente };
+    });
+  }, [producoes]);
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#F6F7FB] dark:bg-[#0F1117]">
@@ -151,9 +201,14 @@ export default function DashboardConfeccao() {
           <CardKPI
             icon={DollarSign}
             title="Pendente de Pagamento"
-            value={pgtoPendente}
+            value={costuraPendente}
             hide={hideValues}
             isCurrency
+            subtitle={
+              pgtoPendente > 0 && pgtoPendente !== costuraPendente
+                ? `Costura (Lote: ${formatCurrency(pgtoPendente, false)})`
+                : "Apenas Costura"
+            }
           />{" "}
         </div>{" "}
         {/* Gráficos de Produção */}
@@ -175,7 +230,10 @@ export default function DashboardConfeccao() {
                 <PieChart>
                   {" "}
                   <Pie
-                    data={[{ value: 0 }, { value: 100 }]}
+                    data={[
+                      { value: Math.min(100, Math.max(0, taxaEficiencia)) },
+                      { value: Math.max(0, 100 - taxaEficiencia) },
+                    ]}
                     innerRadius={75}
                     outerRadius={95}
                     dataKey="value"
@@ -193,7 +251,7 @@ export default function DashboardConfeccao() {
               <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none mt-2">
                 {" "}
                 <span className="text-[38px] font-black text-foreground leading-none mb-1">
-                  0%
+                  {taxaEficiencia.toFixed(0)}%
                 </span>{" "}
                 <span className="text-[12px] font-medium text-muted-foreground">
                   de eficiência
@@ -242,13 +300,7 @@ export default function DashboardConfeccao() {
               <ResponsiveContainer width="100%" height="100%">
                 {" "}
                 <BarChart
-                  data={[
-                    { name: "Semana 1", previsto: 0, entregue: 0, pendente: 0 },
-                    { name: "Semana 2", previsto: 0, entregue: 0, pendente: 0 },
-                    { name: "Semana 3", previsto: 0, entregue: 0, pendente: 0 },
-                    { name: "Semana 4", previsto: 0, entregue: 0, pendente: 0 },
-                    { name: "Semana 5", previsto: 0, entregue: 0, pendente: 0 },
-                  ]}
+                  data={weeklyProductionData}
                   margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
                   barGap={4}
                   barSize={14}
@@ -363,10 +415,10 @@ export default function DashboardConfeccao() {
                           {p.produtoNome}
                         </td>
                         <td className="py-4 text-[13px] font-medium text-muted-foreground">
-                          Lote {p.id.slice(0, 4)}
+                          {formatLote(p.lote) || (p.id ? `L${p.id.slice(0, 4).toUpperCase()}` : "L0001")}
                         </td>
                         <td className="py-4 text-[13px] font-medium text-foreground">
-                          {p.quantidadeTotal} un
+                          {p.totalPendente !== undefined ? p.totalPendente : Math.max(0, (Number(p.quantidadeTotal) || 0) - (Number(p.totalEntregue) || 0))} un
                         </td>
                         <td className="py-4 text-[13px] font-medium text-foreground">
                           {format(parseISO(p.dataPrevisao), "dd/MM/yyyy")}
@@ -487,6 +539,7 @@ function CardKPI({
   value,
   hide,
   isCurrency,
+  subtitle,
   className,
 }: any) {
   return (
@@ -517,6 +570,11 @@ function CardKPI({
               ? formatCurrency(value, false)
               : value.toLocaleString("pt-BR")}
         </p>{" "}
+        {subtitle && (
+          <p className="text-[12px] font-medium text-muted-foreground mt-2 truncate">
+            {subtitle}
+          </p>
+        )}
       </div>{" "}
     </div>
   );

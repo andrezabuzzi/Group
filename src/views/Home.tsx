@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useMemo } from "react";
 import { db } from "../lib/firebase";
-import { collection, query, where, onSnapshot } from "firebase/firestore";
+import { collection, query, where, onSnapshot, collectionGroup } from "firebase/firestore";
+import { isProductionOverdue, formatLote, calcProducaoFinanceiro } from "../lib/erpUtils";
 import { useAuth } from "../contexts/AuthContext";
 import { useTheme } from "../components/ThemeProvider";
 import { motion, AnimatePresence } from "motion/react";
@@ -187,30 +188,57 @@ export default function Dashboard() {
   let faturamento = 0;
   let totalMeta = 0;
   salesGoals.forEach((g) => {
-    totalMeta += Number(g.goalValue) || 0;
+    totalMeta += Number(g.revenueGoal || g.goalValue) || 0;
     (g.weeklyResults || []).forEach((w: any) => {
-      faturamento += Number(w.value) || 0;
+      faturamento += Number(w.realizedRevenue || w.value) || 0;
     });
   });
   const percAtingido = totalMeta > 0 ? (faturamento / totalMeta) * 100 : 0;
   const faltante = Math.max(0, totalMeta - faturamento);
-  /*  Produção  */ const totalPecasMes = producoes.reduce(
+
+  const weeklySalesData = useMemo(() => {
+    return [1, 2, 3, 4, 5].map((wNum) => {
+      let real = 0;
+      salesGoals.forEach((g) => {
+        (g.weeklyResults || []).forEach((w: any) => {
+          if (w.weekNumber === wNum || w.weekLabel === `Semana ${wNum}`) {
+            real += Number(w.realizedRevenue || w.value) || 0;
+          }
+        });
+      });
+      const meta = totalMeta > 0 ? Math.round(totalMeta / 4) : 0;
+      return { name: `Semana ${wNum}`, real, meta };
+    });
+  }, [salesGoals, totalMeta]);
+
+  /* Produção */
+  const totalPecasMes = producoes.reduce(
     (acc, p) => acc + (Number(p.quantidadeTotal) || 0),
     0,
   );
-  const pendenteEntrega = producoes
-    .filter((p) => p.status !== "Finalizado")
-    .reduce((acc, p) => acc + (Number(p.quantidadeTotal) || 0), 0);
-  const totalEntregue = totalPecasMes - pendenteEntrega;
-  const pendentePgto = producoes
-    .filter((p) => p.statusPgto !== "Pago")
-    .reduce((acc, p) => acc + Number(p.valorTotal || 0), 0);
-  let prodAtrasadas = producoes.filter(
-    (p) =>
-      p.status !== "Finalizado" &&
-      p.dataPrevisao &&
-      new Date(p.dataPrevisao) < new Date(),
-  );
+  const totalEntregue = producoes.reduce((acc, p) => {
+    if (p.totalEntregue !== undefined) return acc + (Number(p.totalEntregue) || 0);
+    const recs = p.recebimentos || [];
+    return acc + recs.reduce((sum: number, r: any) => sum + (Number(r.quantidade) || 0), 0);
+  }, 0);
+  const pendenteEntrega = producoes.reduce((acc, p) => {
+    if (p.totalPendente !== undefined) return acc + (Number(p.totalPendente) || 0);
+    const totalQtd = Number(p.quantidadeTotal) || 0;
+    const ent = p.totalEntregue !== undefined ? Number(p.totalEntregue) : 0;
+    return acc + Math.max(0, totalQtd - ent);
+  }, 0);
+  const pendentePgto = producoes.reduce((acc, p) => {
+    const fin = calcProducaoFinanceiro(p);
+    return acc + fin.saldoPendenteLote;
+  }, 0);
+  const pendenteCostura = producoes.reduce((acc, p) => {
+    const fin = calcProducaoFinanceiro(p);
+    return acc + fin.saldoCostura;
+  }, 0);
+  let prodAtrasadas = producoes.filter((p) => {
+    const pendente = p.totalPendente !== undefined ? Number(p.totalPendente) : Math.max(0, (Number(p.quantidadeTotal) || 0) - (Number(p.totalEntregue) || 0));
+    return p.statusProducao !== "Finalizado" && isProductionOverdue(p.dataPrevisao, pendente);
+  });
   /*  Devoluções  */ const totalReturnsItems = returns.length;
   const returnFreightCost = returns.reduce(
     (acc, r) => acc + (Number(r.freightCost) || 0),
@@ -386,13 +414,7 @@ export default function Dashboard() {
                 <ResponsiveContainer width="100%" height="100%">
                   {" "}
                   <LineChart
-                    data={[
-                      { name: "Semana 1", real: 0, meta: 0 },
-                      { name: "Semana 2", real: 0, meta: 0 },
-                      { name: "Semana 3", real: 0, meta: 0 },
-                      { name: "Semana 4", real: 0, meta: 0 },
-                      { name: "Semana 5", real: 0, meta: 0 },
-                    ]}
+                    data={weeklySalesData}
                     margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
                   >
                     {" "}
@@ -550,9 +572,14 @@ export default function Dashboard() {
             <CardKPI
               icon={Receipt}
               title="Pendente Pagamento"
-              value={pendentePgto}
+              value={pendenteCostura}
               hide={hideValues}
               isCurrency
+              subtitle={
+                pendentePgto > 0 && pendentePgto !== pendenteCostura
+                  ? `Costura (Lote: ${formatCurrency(pendentePgto, false)})`
+                  : "Apenas Costura"
+              }
             />{" "}
           </div>{" "}
         </section>{" "}
@@ -632,7 +659,7 @@ export default function Dashboard() {
               count={prodAtrasadas.length}
               items={prodAtrasadas.slice(0, 4).map((p: any) => ({
                 title: p.produtoNome,
-                desc: p.id ? `Lote ${p.id.slice(0, 4)}` : "Sem lote",
+                desc: formatLote(p.lote) || (p.id ? `L${p.id.slice(0, 4).toUpperCase()}` : "L0001"),
                 value: `${p.quantidadeTotal} un`,
               }))}
               action="Ver atrasos"
@@ -643,10 +670,10 @@ export default function Dashboard() {
               title="Próximos Pagamentos"
               count={accountsPending.slice(0, 4).length}
               items={accountsPending.slice(0, 4).map((a: any) => ({
-                title: a.name,
-                value: formatCurrency(Number(a.value), false),
-                desc: a.dueDate
-                  ? new Date(a.dueDate).toLocaleDateString("pt-BR")
+                title: a.description || a.supplier || a.name || "Conta a Pagar",
+                value: formatCurrency(Number(a.value || a.totalValue || 0), false),
+                desc: a.dueDate || a.firstDueDate
+                  ? new Date(a.dueDate || a.firstDueDate).toLocaleDateString("pt-BR")
                   : "Sem data",
               }))}
               action="Ver pagamentos"

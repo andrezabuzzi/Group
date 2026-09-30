@@ -10,6 +10,7 @@ import {
   deleteDoc,
   updateDoc,
   serverTimestamp,
+  onSnapshot,
 } from "firebase/firestore";
 import { useAuth } from "../contexts/AuthContext";
 import { Button } from "../components/ui/button";
@@ -147,45 +148,54 @@ export default function Produtos() {
           0,
         ) / (pecasProduzidas || 1)
       : 0;
-  const fetchProdutos = async () => {
-    if (!user) return;
-    try {
-      const q = query(
-        collection(db, "prod_produtos"),
-        where("userId", "==", user.uid),
-      );
-      const querySnapshot = await getDocs(q);
-      const data = querySnapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
-      setProdutos(data);
-      const pQ = query(
-        collection(db, "prod_producoes"),
-        where("userId", "==", user.uid),
-      );
-      const pSnap = await getDocs(pQ);
-      const info: Record<string, { totalPecas: number; custoTotal: number }> =
-        {};
-      pSnap.docs.forEach((d) => {
-        const p = d.data();
-        if (p.produtoId) {
-          if (!info[p.produtoId])
-            info[p.produtoId] = { totalPecas: 0, custoTotal: 0 };
-          info[p.produtoId].totalPecas += parseInt(p.quantidadeTotal) || 0;
-          info[p.produtoId].custoTotal += parseFloat(p.custoTotal) || 0;
-        }
-      });
-      setProducoesInfo(info);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.LIST, "prod_produtos");
-    } finally {
-      setLoading(false);
-    }
-  };
   useEffect(() => {
-    fetchProdutos();
+    if (!user) return;
+    const unsubProdutos = onSnapshot(
+      query(collection(db, "prod_produtos"), where("userId", "==", user.uid)),
+      (snapshot) => {
+        const data = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+        setProdutos(data);
+        setLoading(false);
+      },
+      (error) => handleFirestoreError(error, OperationType.LIST, "prod_produtos")
+    );
+
+    const unsubProducoes = onSnapshot(
+      query(collection(db, "prod_producoes"), where("userId", "==", user.uid)),
+      (snapshot) => {
+        const info: Record<string, { totalPecas: number; custoTotal: number; totalEntregue: number; totalPendente: number; lotesAtivos: number }> = {};
+        snapshot.docs.forEach((d) => {
+          const p = d.data();
+          if (p.produtoId) {
+            if (!info[p.produtoId]) {
+              info[p.produtoId] = { totalPecas: 0, custoTotal: 0, totalEntregue: 0, totalPendente: 0, lotesAtivos: 0 };
+            }
+            const qtdTotal = parseInt(p.quantidadeTotal) || 0;
+            const entregue = p.totalEntregue !== undefined ? Number(p.totalEntregue) : (p.recebimentos ? p.recebimentos.reduce((s: number, r: any) => s + (Number(r.quantidade) || 0), 0) : 0);
+            const pendente = p.totalPendente !== undefined ? Number(p.totalPendente) : Math.max(0, qtdTotal - entregue);
+            info[p.produtoId].totalPecas += qtdTotal;
+            info[p.produtoId].totalEntregue += entregue;
+            info[p.produtoId].totalPendente += pendente;
+            info[p.produtoId].custoTotal += parseFloat(p.custoTotal) || 0;
+            if (p.statusProducao !== "Finalizado") {
+              info[p.produtoId].lotesAtivos++;
+            }
+          }
+        });
+        setProducoesInfo(info);
+      },
+      (error) => handleFirestoreError(error, OperationType.LIST, "prod_producoes")
+    );
+
+    return () => {
+      unsubProdutos();
+      unsubProducoes();
+    };
   }, [user]);
+
+  const fetchProdutos = async () => {
+    // Kept for backward compatibility
+  };
   const handleSave = async () => {
     if (!user) return;
     if (!formData.nome || !formData.precoVendaMedio || !formData.categoria) {
