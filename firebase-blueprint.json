@@ -113,6 +113,35 @@
         "userId": { "type": "string" }
       },
       "required": ["id", "dataEntrega", "quantidadeEntregue", "createdAt", "userId"]
+    },
+    "Return": {
+      "title": "Return",
+      "description": "Customer return records from marketplaces.",
+      "type": "object",
+      "properties": {
+        "orderNumber": { "type": "string" },
+        "marketplace": { "type": "string" },
+        "customerName": { "type": "string" },
+        "returnDate": { "type": "string" },
+        "productId": { "type": "string" },
+        "productName": { "type": "string" },
+        "sku": { "type": "string" },
+        "variation": { "type": "string" },
+        "quantity": { "type": "number" },
+        "orderValue": { "type": "number" },
+        "freightCost": { "type": "number" },
+        "hasImpact": { "type": "boolean" },
+        "returnReason": { "type": "string" },
+        "productStatus": { "type": "string" },
+        "reputationStatus": { "type": "string" },
+        "inspectionNotes": { "type": "string" },
+        "overallStatus": { "type": "string" },
+        "type": { "type": "string" },
+        "userId": { "type": "string" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      },
+      "required": ["orderNumber", "marketplace", "returnDate", "userId"]
     }
   },
   "firestore": {
@@ -135,6 +164,10 @@
     "/producoes/{producaoId}/entregas/{entregaId}": {
       "schema": { "$ref": "Entrega" },
       "description": "Deliveries for a specific production. Ownership via userId."
+    },
+    "/prod_returns/{docId}": {
+      "schema": { "$ref": "Return" },
+      "description": "Customer return records from marketplaces. Ownership enforced."
     }
   }
 }

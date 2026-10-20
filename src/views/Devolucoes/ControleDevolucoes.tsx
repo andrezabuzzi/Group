@@ -112,6 +112,7 @@ export default function ControleDevolucoes() {
     customerName: "",
     returnDate: format(new Date(), "yyyy-MM-dd"),
     productId: "",
+    productName: "",
     sku: "",
     variation: "",
     quantity: "1",
@@ -126,138 +127,232 @@ export default function ControleDevolucoes() {
   };
   const [formData, setFormData] = useState(defaultForm);
   const [editingId, setEditingId] = useState<string | null>(null);
+
   useEffect(() => {
     if (!user) return;
-    /*  Fetch Products */ const qProd = query(
+    /* Fetch Products */
+    const qProd = query(
       collection(db, "prod_produtos"),
       where("userId", "==", user.uid),
     );
-    const unsubProd = onSnapshot(qProd, (snapshot) => {
-      setProdutos(snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
-    });
-    /*  Fetch Returns */ const mode = isPessoal ? "pessoal" : "empresa";
+    const unsubProd = onSnapshot(
+      qProd,
+      (snapshot) => {
+        setProdutos(snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
+      },
+      (error) => {
+        console.error("Erro ao carregar produtos:", error);
+      }
+    );
+
+    /* Fetch Returns */
     const q = query(
       collection(db, "prod_returns"),
       where("userId", "==", user.uid),
-      where("type", "==", mode),
     );
-    const unsub = onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
-      data.sort((a: any, b: any) => {
-        const dateA = a.returnDate || a.createdAt;
-        const dateB = b.returnDate || b.createdAt;
-        return new Date(dateB).getTime() - new Date(dateA).getTime();
-      });
-      setReturns(data);
-      setLoading(false);
-    });
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+        data.sort((a: any, b: any) => {
+          const dateA = a.returnDate || a.createdAt;
+          const dateB = b.returnDate || b.createdAt;
+          return new Date(dateB).getTime() - new Date(dateA).getTime();
+        });
+        setReturns(data);
+        setLoading(false);
+      },
+      (error) => {
+        console.error("Erro ao carregar devoluções:", error);
+        setLoading(false);
+      }
+    );
+
     return () => {
       unsub();
       unsubProd();
     };
-  }, [user, isPessoal]);
+  }, [user]);
+
   const resetForm = () => {
     setFormData(defaultForm);
     setEditingId(null);
     setCurrentStep(1);
   };
+
   const validateStep = (step: number) => {
     if (step === 1) {
-      if (!formData.orderNumber || !formData.returnDate) {
-        toast.error("Preencha os campos obrigatórios (Pedido e Data)");
+      if (!formData.orderNumber?.trim()) {
+        toast.error("Informe o Nº do Pedido");
+        return false;
+      }
+      if (!formData.returnDate) {
+        toast.error("Informe a Data da Devolução");
         return false;
       }
     }
     if (step === 2) {
-      if (!formData.productId && !formData.sku) {
-        toast.error("Selecione um produto ou digite o SKU");
+      if (!formData.productId && !formData.sku?.trim()) {
+        toast.error("Selecione um produto cadastrado ou digite o SKU / identificador");
         return false;
       }
-      if (!formData.quantity || !formData.orderValue) {
-        toast.error("Preencha a quantidade e o valor");
+      const rawQty = String(formData.quantity ?? "").trim();
+      if (!rawQty || parseInt(rawQty, 10) <= 0) {
+        toast.error("Informe uma quantidade válida (mínimo 1)");
         return false;
       }
-      if (formData.hasImpact === "true" && !formData.freightCost) {
-        toast.error("Informe o valor do prejuízo de frete");
-        return false;
+      if (formData.hasImpact === "true") {
+        const rawFreight = String(formData.freightCost ?? "").trim();
+        if (!rawFreight) {
+          toast.error("Informe o valor do prejuízo de frete");
+          return false;
+        }
       }
     }
     return true;
   };
+
   const handleNextStep = () => {
     if (validateStep(currentStep)) {
-      setCurrentStep(currentStep + 1);
+      setCurrentStep((prev) => Math.min(prev + 1, 3));
     }
   };
+
   const openNewModal = () => {
     resetForm();
     setIsModalOpen(true);
   };
+
   const handleEdit = (item: any) => {
     setFormData({
       ...defaultForm,
-      ...item,
-      orderValue: item.orderValue?.toString() || "",
-      freightCost: item.freightCost?.toString() || "",
+      orderNumber: item.orderNumber || "",
+      marketplace: item.marketplace || "Mercado Livre",
+      customerName: item.customerName || "",
+      returnDate: item.returnDate || format(new Date(), "yyyy-MM-dd"),
+      productId: item.productId || "",
+      productName: item.productName || "",
+      sku: item.sku || "",
+      variation: item.variation || "",
       quantity: item.quantity?.toString() || "1",
+      orderValue: item.orderValue !== undefined && item.orderValue !== null ? String(item.orderValue) : "",
+      freightCost: item.freightCost !== undefined && item.freightCost !== null ? String(item.freightCost) : "",
       hasImpact: item.hasImpact ? "true" : "false",
+      returnReason: item.returnReason || "Produto com defeito",
+      productStatus: item.productStatus || "Defeito",
+      reputationStatus: item.reputationStatus || "Verificar",
+      inspectionNotes: item.inspectionNotes || "",
+      overallStatus: item.overallStatus || "Pendente",
     });
     setEditingId(item.id);
     setCurrentStep(1);
     setIsModalOpen(true);
   };
+
   const handleDelete = async (id: string) => {
     try {
       await deleteDoc(doc(db, "prod_returns", id));
       toast.success("Devolução excluída!");
-    } catch (e) {
-      toast.error("Erro ao excluir");
+    } catch (e: any) {
+      console.error("Erro ao excluir devolução:", e);
+      toast.error(e?.message ? `Erro ao excluir: ${e.message}` : "Erro ao excluir");
     }
   };
-  const handleSave = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (currentStep < 3) {
-      handleNextStep();
+
+  const handleSave = async (e?: React.FormEvent | React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    if (currentStep === 1) {
+      if (validateStep(1)) setCurrentStep(2);
       return;
     }
-    if (!user) return;
+    if (currentStep === 2) {
+      if (validateStep(2)) setCurrentStep(3);
+      return;
+    }
+    // Validating steps before persisting
+    if (!validateStep(1)) {
+      setCurrentStep(1);
+      return;
+    }
+    if (!validateStep(2)) {
+      setCurrentStep(2);
+      return;
+    }
+    if (!user) {
+      toast.error("Você precisa estar autenticado para salvar.");
+      return;
+    }
     setIsSubmitting(true);
     try {
       const mode = isPessoal ? "pessoal" : "empresa";
       const prod = produtos.find((p) => p.id === formData.productId);
-      const skuToSave = prod ? prod.sku : formData.sku;
-      const dataToSave = {
-        ...formData,
+      const skuToSave = (formData.sku || prod?.sku || "").trim();
+      const productNameToSave = (formData.productName || prod?.nome || prod?.name || formData.sku || "Produto").trim();
+
+      const orderValStr = String(formData.orderValue ?? "0").replace(",", ".");
+      const freightCostStr = String(formData.freightCost ?? "0").replace(",", ".");
+      const quantityNum = parseInt(String(formData.quantity ?? "1"), 10) || 1;
+      const orderValueNum = parseFloat(orderValStr) || 0;
+      const freightCostNum = parseFloat(freightCostStr) || 0;
+
+      const dataToSave: Record<string, any> = {
+        orderNumber: String(formData.orderNumber || "").trim(),
+        marketplace: String(formData.marketplace || "Mercado Livre").trim(),
+        customerName: String(formData.customerName || "").trim(),
+        returnDate: String(formData.returnDate || format(new Date(), "yyyy-MM-dd")).trim(),
+        productId: String(formData.productId || "").trim(),
+        productName: productNameToSave,
         sku: skuToSave,
+        variation: String(formData.variation || "").trim(),
+        quantity: quantityNum,
+        orderValue: orderValueNum,
+        freightCost: freightCostNum,
+        hasImpact: formData.hasImpact === "true",
+        returnReason: String(formData.returnReason || "Produto com defeito").trim(),
+        productStatus: String(formData.productStatus || "Defeito").trim(),
+        reputationStatus: String(formData.reputationStatus || "Verificar").trim(),
+        inspectionNotes: String(formData.inspectionNotes || "").trim(),
+        overallStatus: String(formData.overallStatus || "Pendente").trim(),
         userId: user.uid,
         type: mode,
-        quantity: parseInt(formData.quantity) || 1,
-        orderValue: parseFloat(formData.orderValue.replace(",", ".")) || 0,
-        freightCost: parseFloat(formData.freightCost.replace(",", ".")) || 0,
-        hasImpact: formData.hasImpact === "true",
         updatedAt: serverTimestamp(),
       };
+
+      // Clean up any undefined values
+      Object.keys(dataToSave).forEach((key) => {
+        if (dataToSave[key] === undefined) {
+          delete dataToSave[key];
+        }
+      });
+
       if (editingId) {
         await updateDoc(doc(db, "prod_returns", editingId), dataToSave);
-        toast.success("Devolução atualizada!");
+        toast.success("Devolução atualizada com sucesso!");
       } else {
         await addDoc(collection(db, "prod_returns"), {
           ...dataToSave,
           createdAt: serverTimestamp(),
         });
-        toast.success("Nova devolução registrada!");
+        toast.success("Nova devolução registrada com sucesso!");
       }
       setIsModalOpen(false);
       resetForm();
-    } catch (e) {
-      toast.error("Erro ao salvar devolução.");
+    } catch (e: any) {
+      console.error("Erro ao salvar devolução:", e);
+      const errMsg = e?.message || String(e);
+      toast.error(`Erro ao salvar devolução: ${errMsg}`);
     } finally {
       setIsSubmitting(false);
     }
   };
+
   const handlePrint = () => {
     window.print();
   };
+
   const handleUpdateStatus = async (
     id: string,
     field: string,
@@ -269,8 +364,9 @@ export default function ControleDevolucoes() {
         updatedAt: serverTimestamp(),
       });
       toast.success("Status atualizado com sucesso!");
-    } catch (e) {
-      toast.error("Erro ao atualizar status");
+    } catch (e: any) {
+      console.error("Erro ao atualizar status:", e);
+      toast.error(e?.message ? `Erro ao atualizar status: ${e.message}` : "Erro ao atualizar status");
     }
   };
   const currentMonthDate = new Date();
@@ -1548,14 +1644,12 @@ export default function ControleDevolucoes() {
             </div>{" "}
             <StepIndicator />{" "}
             <form
+              noValidate
               className="flex-1 flex flex-col overflow-hidden"
               onSubmit={handleSave}
             >
-              {" "}
               <div className="p-8 overflow-y-auto hide-scrollbar flex-1 min-h-[400px]">
-                {" "}
                 <AnimatePresence mode="wait">
-                  {" "}
                   {currentStep === 1 && (
                     <motion.div
                       key="step1"
@@ -1564,14 +1658,11 @@ export default function ControleDevolucoes() {
                       exit={{ opacity: 0, x: -20 }}
                       className="space-y-8"
                     >
-                      {" "}
                       <div>
-                        {" "}
                         <label className="text-[13px] font-bold text-foreground mb-3 block">
                           Canal / Marketplace *
-                        </label>{" "}
+                        </label>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                          {" "}
                           {[
                             "Mercado Livre",
                             "Shopee",
@@ -1588,16 +1679,14 @@ export default function ControleDevolucoes() {
                                 setFormData({ ...formData, marketplace: mk })
                               }
                             />
-                          ))}{" "}
-                        </div>{" "}
-                      </div>{" "}
+                          ))}
+                        </div>
+                      </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        {" "}
                         <div className="space-y-3">
-                          {" "}
                           <label className="text-[13px] font-bold text-foreground ml-1">
                             Nº do Pedido *
-                          </label>{" "}
+                          </label>
                           <Input
                             required
                             value={formData.orderNumber}
@@ -1609,13 +1698,12 @@ export default function ControleDevolucoes() {
                             }
                             className="h-14 font-bold rounded-[16px] bg-background/50 border-border/50 focus:border-primary shadow-none text-[15px]"
                             placeholder="#2024..."
-                          />{" "}
-                        </div>{" "}
+                          />
+                        </div>
                         <div className="space-y-3">
-                          {" "}
                           <label className="text-[13px] font-bold text-foreground ml-1">
                             Cliente
-                          </label>{" "}
+                          </label>
                           <Input
                             value={formData.customerName}
                             onChange={(e) =>
@@ -1626,13 +1714,12 @@ export default function ControleDevolucoes() {
                             }
                             className="h-14 font-medium rounded-[16px] bg-background/50 border-border/50 focus:border-primary shadow-none text-[15px]"
                             placeholder="Nome do comprador"
-                          />{" "}
-                        </div>{" "}
+                          />
+                        </div>
                         <div className="space-y-3 md:col-span-2">
-                          {" "}
                           <label className="text-[13px] font-bold text-foreground ml-1">
                             Data Devolução *
-                          </label>{" "}
+                          </label>
                           <Input
                             type="date"
                             required
@@ -1644,134 +1731,137 @@ export default function ControleDevolucoes() {
                               })
                             }
                             className="h-14 font-medium rounded-[16px] bg-background/50 border-border/50 focus:border-primary shadow-none text-[15px]"
-                          />{" "}
-                        </div>{" "}
-                      </div>{" "}
+                          />
+                        </div>
+                      </div>
                     </motion.div>
-                  )}{" "}
+                  )}
                   {currentStep === 2 && (
                     <motion.div
                       key="step2"
                       initial={{ opacity: 0, x: 20 }}
                       animate={{ opacity: 1, x: 0 }}
                       exit={{ opacity: 0, x: -20 }}
-                      className="space-y-8"
+                      className="space-y-6"
                     >
-                      {" "}
                       <div className="space-y-3">
-                        {" "}
                         <label className="text-[13px] font-bold text-foreground ml-1">
-                          Produto *
-                        </label>{" "}
+                          Produto Cadastrado
+                        </label>
                         <Select
                           value={formData.productId}
-                          onValueChange={(v) =>
-                            setFormData({ ...formData, productId: v })
-                          }
+                          onValueChange={(v) => {
+                            const selectedProd = produtos.find((p) => p.id === v);
+                            const price = selectedProd?.precoVendaMedio ?? selectedProd?.precoVenda ?? selectedProd?.preco;
+                            setFormData((prev) => ({
+                              ...prev,
+                              productId: v,
+                              productName: selectedProd?.nome || selectedProd?.name || prev.productName || "",
+                              sku: selectedProd?.sku || prev.sku || "",
+                              orderValue: prev.orderValue ? prev.orderValue : (price !== undefined && price !== null ? String(price) : ""),
+                            }));
+                          }}
                         >
-                          {" "}
                           <SelectTrigger className="h-14 bg-background/50 border-border/50 hover:border-border focus:border-primary rounded-[16px] font-medium text-[15px] shadow-none">
-                            {" "}
-                            <SelectValue placeholder="Selecione um produto cadastrado..." />{" "}
-                          </SelectTrigger>{" "}
+                            <SelectValue placeholder="Selecione um produto cadastrado (opcional)..." />
+                          </SelectTrigger>
                           <SelectContent className="rounded-[20px] border-border/50 shadow-xl p-1 max-h-[300px]">
-                            {" "}
                             {produtos.map((p) => (
                               <SelectItem
                                 key={p.id}
                                 value={p.id}
                                 className="rounded-[12px] font-medium py-3"
                               >
-                                {" "}
-                                {p.sku} - {p.name}{" "}
+                                {p.sku ? `${p.sku} - ` : ""}{p.nome || p.name || "Produto sem nome"}
                               </SelectItem>
-                            ))}{" "}
-                          </SelectContent>{" "}
-                        </Select>{" "}
-                        {!formData.productId && (
+                            ))}
+                          </SelectContent>
+                        </Select>
+
+                        <div className="space-y-1.5 mt-2">
+                          <label className="text-[13px] font-bold text-foreground ml-1">
+                            SKU / Código do Produto *
+                          </label>
                           <Input
                             value={formData.sku}
                             onChange={(e) =>
-                              setFormData({ ...formData, sku: e.target.value })
+                              setFormData((prev) => ({ ...prev, sku: e.target.value }))
                             }
-                            className="h-14 mt-3 font-medium rounded-[16px] bg-background/50 border-border/50 focus:border-primary shadow-none text-[15px]"
-                            placeholder="Ou digite o SKU manualmente..."
+                            className="h-14 font-medium rounded-[16px] bg-background/50 border-border/50 focus:border-primary shadow-none text-[15px]"
+                            placeholder="Digite o SKU ou identifique o item..."
                           />
-                        )}{" "}
-                      </div>{" "}
+                        </div>
+                      </div>
+
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        {" "}
                         <div className="space-y-3">
-                          {" "}
                           <label className="text-[13px] font-bold text-foreground ml-1">
                             Quantidade *
-                          </label>{" "}
+                          </label>
                           <Input
                             type="number"
                             required
+                            min="1"
                             value={formData.quantity}
                             onChange={(e) =>
-                              setFormData({
-                                ...formData,
+                              setFormData((prev) => ({
+                                ...prev,
                                 quantity: e.target.value,
-                              })
+                              }))
                             }
                             className="h-14 font-black rounded-[16px] bg-background/50 border-border/50 focus:border-primary shadow-none text-[15px]"
-                            min="1"
-                          />{" "}
-                        </div>{" "}
+                          />
+                        </div>
                         <div className="space-y-3">
-                          {" "}
                           <label className="text-[13px] font-bold text-foreground ml-1">
                             Valor do Pedido (R$) *
-                          </label>{" "}
+                          </label>
                           <Input
+                            type="text"
+                            inputMode="decimal"
                             required
-                            type="number"
-                            step="0.01"
                             value={formData.orderValue}
                             onChange={(e) =>
-                              setFormData({
-                                ...formData,
+                              setFormData((prev) => ({
+                                ...prev,
                                 orderValue: e.target.value,
-                              })
+                              }))
                             }
                             className="h-14 font-black rounded-[16px] bg-background/50 border-border/50 focus:border-primary shadow-none text-[15px]"
                             placeholder="0.00"
-                          />{" "}
-                        </div>{" "}
-                      </div>{" "}
+                          />
+                        </div>
+                      </div>
+
                       <div className="pt-4 border-t border-border/40">
-                        {" "}
                         <label className="text-[13px] font-bold text-foreground mb-3 block">
                           Houve impacto na plataforma / prejuízo de frete? *
-                        </label>{" "}
+                        </label>
                         <div className="grid grid-cols-2 gap-4">
-                          {" "}
                           <CheckChip
                             label="Não (Apenas estorno)"
                             selected={formData.hasImpact === "false"}
                             onClick={() =>
-                              setFormData({
-                                ...formData,
+                              setFormData((prev) => ({
+                                ...prev,
                                 hasImpact: "false",
                                 freightCost: "",
-                              })
+                              }))
                             }
                             activeColor="bg-primary/10 text-primary border-primary shadow-none"
-                          />{" "}
+                          />
                           <CheckChip
                             label="Sim (Prejuízo frete)"
                             selected={formData.hasImpact === "true"}
                             onClick={() =>
-                              setFormData({ ...formData, hasImpact: "true" })
+                              setFormData((prev) => ({ ...prev, hasImpact: "true" }))
                             }
                             activeColor="bg-destructive text-destructive-foreground shadow-[0_4px_16px_rgba(239,68,68,0.3)] border-transparent"
-                          />{" "}
-                        </div>{" "}
-                      </div>{" "}
+                          />
+                        </div>
+                      </div>
+
                       <AnimatePresence>
-                        {" "}
                         {formData.hasImpact === "true" && (
                           <motion.div
                             initial={{ opacity: 0, height: 0 }}
@@ -1779,27 +1869,26 @@ export default function ControleDevolucoes() {
                             exit={{ opacity: 0, height: 0 }}
                             className="space-y-3"
                           >
-                            {" "}
                             <label className="text-[13px] font-bold text-destructive ml-1">
                               Custo / Prejuízo do Frete (R$)
-                            </label>{" "}
+                            </label>
                             <Input
+                              type="text"
+                              inputMode="decimal"
                               required
-                              type="number"
-                              step="0.01"
                               value={formData.freightCost}
                               onChange={(e) =>
-                                setFormData({
-                                  ...formData,
+                                setFormData((prev) => ({
+                                  ...prev,
                                   freightCost: e.target.value,
-                                })
+                                }))
                               }
                               className="h-14 font-black rounded-[16px] border-destructive/30 focus:border-destructive shadow-none text-[15px] bg-destructive/5 text-destructive"
                               placeholder="0.00"
-                            />{" "}
+                            />
                           </motion.div>
-                        )}{" "}
-                      </AnimatePresence>{" "}
+                        )}
+                      </AnimatePresence>
                     </motion.div>
                   )}{" "}
                   {currentStep === 3 && (
@@ -1928,8 +2017,7 @@ export default function ControleDevolucoes() {
                   )}{" "}
                 </AnimatePresence>{" "}
               </div>{" "}
-              <div className="premium-card p-6 border-t -/40 flex items-center justify-between gap-4 mt-auto">
-                {" "}
+              <div className="p-6 border-t border-border/40 flex items-center justify-between gap-4 mt-auto bg-card">
                 <Button
                   type="button"
                   variant="ghost"
@@ -1940,15 +2028,14 @@ export default function ControleDevolucoes() {
                       : setIsModalOpen(false)
                   }
                 >
-                  {" "}
                   {currentStep > 1 ? (
                     <>
                       <ChevronLeft className="w-5 h-5 mr-2" /> Voltar
                     </>
                   ) : (
                     "Cancelar"
-                  )}{" "}
-                </Button>{" "}
+                  )}
+                </Button>
                 {currentStep < 3 && (
                   <Button
                     key="next-btn"
@@ -1959,25 +2046,24 @@ export default function ControleDevolucoes() {
                       handleNextStep();
                     }}
                   >
-                    {" "}
-                    Próximo <ChevronRight className="w-5 h-5 ml-2" />{" "}
+                    Próximo <ChevronRight className="w-5 h-5 ml-2" />
                   </Button>
-                )}{" "}
+                )}
                 {currentStep === 3 && (
                   <Button
                     key="submit-btn"
-                    type="submit"
+                    type="button"
                     disabled={isSubmitting}
+                    onClick={handleSave}
                     className="premium-btn-primary h-14 font-bold px-10 rounded-[16px] bg-primary text-primary-foreground shadow-[0_4px_24px_rgba(109,74,255,0.4)] hover:shadow-[0_4px_32px_rgba(109,74,255,0.6)]"
                   >
-                    {" "}
                     {isSubmitting
                       ? "Salvando..."
                       : editingId
                         ? "Atualizar Devolução"
-                        : "Registrar Devolução"}{" "}
+                        : "Registrar Devolução"}
                   </Button>
-                )}{" "}
+                )}
               </div>{" "}
             </form>{" "}
           </DialogContent>{" "}
